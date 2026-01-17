@@ -95,6 +95,13 @@ class ConfigHandler:
             # 如果配置丢失，返回默认值并重新生成配置
             self._create_default_config()
             return self.config.get('SERIAL', 'com').strip("'\"")
+    
+    def get_time_sync_interval(self) -> int:
+        """获取时间同步间隔（分钟），默认30分钟"""
+        try:
+            return self.config.getint('SERIAL', 'time_sync_interval', fallback=30)
+        except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
+            return 30
 
     def get_api_key(self, platform_key: str) -> str:
         """获取 API Key (兼容旧代码，建议直接使用 get_platform_config)"""

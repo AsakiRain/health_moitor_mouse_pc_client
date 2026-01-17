@@ -129,6 +129,14 @@ class MainWindow(QMainWindow):
         self.countdown_timer.timeout.connect(self._on_countdown_tick)
         self.countdown_remaining = 0
         
+        # 时间同步定时器
+        self.time_sync_timer = QTimer(self)
+        self.time_sync_timer.timeout.connect(self._on_time_sync)
+        
+        # 时间同步定时器
+        self.time_sync_timer = QTimer(self)
+        self.time_sync_timer.timeout.connect(self._on_time_sync)
+        
         # --- 状态栏 ---
         self._init_status_bar()
 
@@ -174,6 +182,13 @@ class MainWindow(QMainWindow):
             if self.serial_worker.is_running and not self.serial_thread.isRunning():
                 self.serial_thread.start()
 
+            # 立即发送一次时间同步
+            QTimer.singleShot(50, self._on_time_sync)
+            # 启动定时时间同步
+            sync_interval = self.config_handler.get_time_sync_interval()
+            self.time_sync_timer.setInterval(sync_interval * 60 * 1000)  # 转换为毫秒
+            self.time_sync_timer.start()
+            self._log_to_ui(f"已启动时间同步定时器，间隔 {sync_interval} 分钟。")
             
             QTimer.singleShot(100, lambda: self.serial_worker.send_frame(const.CMD_GET_LAST_HEALTH_DATA))
             QTimer.singleShot(120, lambda: self.serial_worker.send_frame(const.CMD_GET_MOUSE_DATA))
@@ -372,6 +387,20 @@ class MainWindow(QMainWindow):
         if self.countdown_timer.isActive():
             self.countdown_timer.stop()
         self.countdown_remaining = 0
+    
+    def _on_time_sync(self):
+        """定时发送时间同步命令给设备"""
+        if self.serial_worker and self.serial_worker.serial_port and self.serial_worker.serial_port.is_open:
+            self.serial_worker.send_timestamp()
+        else:
+            self._log_to_ui("时间同步失败：串口未连接。")
+    
+    def _on_time_sync(self):
+        """定时发送时间同步命令给设备"""
+        if self.serial_worker and self.serial_worker.serial_port and self.serial_worker.serial_port.is_open:
+            self.serial_worker.send_timestamp()
+        else:
+            self._log_to_ui("时间同步失败：串口未连接。")
 
     def on_mouse_data_received(self, payload: bytes):
         """处理收到的鼠标累计数据，更新界面并写入数据库。"""

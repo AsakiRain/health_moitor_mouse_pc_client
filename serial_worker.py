@@ -7,7 +7,7 @@ from PySide6.QtCore import QObject, Signal, QThread
 
 from constants import (
     PROTO_VER, CMD_ACK, CMD_NOTIFY_HEALTH_DATA_READY, CMD_GET_LAST_HEALTH_DATA,
-    CMD_GET_MOUSE_DATA, CMD_PING, ACK_SUCCESS
+    CMD_GET_MOUSE_DATA, CMD_PING, CMD_SYNC_TIME, ACK_SUCCESS
 )
 
 
@@ -262,6 +262,31 @@ class SerialWorker(QObject):
             self.error_occurred.emit("发送数据超时。")
         except serial.SerialException as e:
             self.error_occurred.emit(f"发送数据失败: {e}")
+    
+    def send_timestamp(self):
+        """发送当前时间戳给设备用于时间校准（包含时区信息）"""
+        # 获取当前Unix时间戳（秒，双精度浮点）
+        timestamp = time.time()
+        
+        # 获取本地时区偏移量（秒）
+        # time.timezone 是 UTC 与本地标准时间的偏移（秒），为正表示西时区
+        # time.altzone 是 UTC 与本地夏令时的偏移
+        # time.daylight 表示是否使用夏令时
+        if time.daylight and time.localtime().tm_isdst:
+            timezone_offset = -time.altzone  # 转换为东正西负
+        else:
+            timezone_offset = -time.timezone
+        
+        # 打包：8字节 timestamp + 4字节 timezone_offset（秒）
+        payload = struct.pack('<di', timestamp, timezone_offset)
+        
+        # 格式化时区显示
+        offset_hours = timezone_offset // 3600
+        offset_minutes = abs(timezone_offset % 3600) // 60
+        tz_str = f"UTC{offset_hours:+03d}:{offset_minutes:02d}"
+        
+        self.log_message.emit(f"发送时间戳: {timestamp} ({time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))}) 时区: {tz_str}")
+        self.send_frame(CMD_SYNC_TIME, payload)
 
     def run(self):
         """持续读取串口数据，包含自动重连逻辑"""
