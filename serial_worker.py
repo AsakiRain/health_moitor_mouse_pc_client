@@ -7,7 +7,8 @@ from PySide6.QtCore import QObject, Signal, QThread
 
 from constants import (
     PROTO_VER, CMD_ACK, CMD_NOTIFY_HEALTH_DATA_READY, CMD_GET_LAST_HEALTH_DATA,
-    CMD_GET_MOUSE_DATA, CMD_PING, CMD_SYNC_TIME, ACK_SUCCESS
+    CMD_GET_MOUSE_DATA, CMD_PING, CMD_SYNC_TIME, ACK_SUCCESS,
+    CMD_SYNC_DATA_START, CMD_SYNC_DATA_BATCH, CMD_SYNC_DATA_END
 )
 
 
@@ -43,6 +44,11 @@ class SerialWorker(QObject):
     ack_received = Signal(int, int)  # original_cmd, status_code
     health_data_received = Signal(bytes)
     mouse_data_received = Signal(bytes)
+    
+    # 同步信号
+    sync_start = Signal(int)  # estimated_total
+    sync_batch = Signal(int, bytes) # sent_count, records
+    sync_end = Signal(int, int) # actual_total, flag
 
     def __init__(self):
         super().__init__()
@@ -60,6 +66,9 @@ class SerialWorker(QObject):
             CMD_NOTIFY_HEALTH_DATA_READY: self._handle_health_data,
             CMD_GET_LAST_HEALTH_DATA: self._handle_health_data,
             CMD_GET_MOUSE_DATA: self._handle_mouse_data,
+            CMD_SYNC_DATA_START: self._handle_sync_start,
+            CMD_SYNC_DATA_BATCH: self._handle_sync_batch,
+            CMD_SYNC_DATA_END: self._handle_sync_end,
         }
 
     def get_port_info(self, port_name):
@@ -370,3 +379,19 @@ class SerialWorker(QObject):
     def _handle_mouse_data(self, payload: bytes):
         """处理鼠标数据"""
         self.mouse_data_received.emit(payload)
+
+    def _handle_sync_start(self, payload: bytes):
+        if len(payload) >= 4:
+            estimated_total = struct.unpack('<I', payload[:4])[0]
+            self.sync_start.emit(estimated_total)
+
+    def _handle_sync_batch(self, payload: bytes):
+        if len(payload) >= 4:
+            sent_count = struct.unpack('<I', payload[:4])[0]
+            records = payload[4:]
+            self.sync_batch.emit(sent_count, records)
+
+    def _handle_sync_end(self, payload: bytes):
+        if len(payload) >= 5:
+            total, flag = struct.unpack('<IB', payload[:5])
+            self.sync_end.emit(total, flag)

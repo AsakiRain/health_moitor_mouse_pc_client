@@ -339,8 +339,20 @@ class MainWindow(QMainWindow):
                 db_path=self.db_handler.db_file, 
                 parent=self
             )
+            # 连接同步相关的信号
+            self.history_window_instance.request_sync.connect(self.send_sync_command)
+            self.serial_worker.sync_start.connect(self.history_window_instance.on_sync_start)
+            self.serial_worker.sync_batch.connect(self.history_window_instance.on_sync_batch)
+            self.serial_worker.sync_end.connect(self.history_window_instance.on_sync_end)
+
         self.history_window_instance.show()
         self.history_window_instance.activateWindow() # 激活窗口到前台
+
+    def send_sync_command(self, timestamp: int):
+        """发送同步命令到设备"""
+        payload = struct.pack('<I', timestamp)
+        self.serial_worker.send_frame(const.CMD_SYNC_HEALTH_DATA, payload)
+        self._log_to_ui(f"已请求同步数据，Last Timestamp: {timestamp}")
 
     def on_health_data_received(self, data: bytes):
         if self.detection_timeout_timer.isActive():

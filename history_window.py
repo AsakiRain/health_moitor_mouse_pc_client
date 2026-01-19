@@ -1,13 +1,14 @@
 import math
 import csv
+import struct
 from datetime import datetime
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QTableView, QHeaderView, 
     QHBoxLayout, QPushButton, QLabel, QStyledItemDelegate, QMenu, QApplication,
-    QFileDialog, QMessageBox
+    QFileDialog, QMessageBox, QProgressDialog
 )
 from PySide6.QtSql import QSqlDatabase, QSqlQueryModel, QSqlQuery
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QAction
 
 import constants as const
@@ -26,6 +27,8 @@ class HistoryWindow(QDialog):
     - 表格列宽自适应
     - 隐藏了 ID 列和行号
     """
+    request_sync = Signal(int)
+
     def __init__(self, db_path='history.db', parent=None):
         super().__init__(parent)
         self.setWindowTitle("历史数据")
@@ -116,12 +119,17 @@ class HistoryWindow(QDialog):
         self.view.horizontalHeader().setStyleSheet("QHeaderView::section { font-weight: bold; }")
 
         # --- 功能按钮 ---
+        self.sync_button = QPushButton("同步数据")
+        self.sync_button.clicked.connect(self.sync_data)
+
         self.extra_button = QPushButton("导出数据")
         self.extra_button.clicked.connect(self.export_data)
+
         self.ai_analysis_button = QPushButton("AI 分析")
         self.ai_analysis_button.clicked.connect(self.open_report_window)
 
         functions_layout = QHBoxLayout()
+        functions_layout.addWidget(self.sync_button)
         functions_layout.addWidget(self.extra_button)
         functions_layout.addWidget(self.ai_analysis_button)
         functions_layout.addStretch()
@@ -275,6 +283,107 @@ class HistoryWindow(QDialog):
             if field_name in const.HEALTH_METRICS_TOOLTIPS:
                 tooltip = const.HEALTH_METRICS_TOOLTIPS[field_name]
                 self.model.setHeaderData(col, Qt.Horizontal, tooltip, Qt.ToolTipRole)
+
+    def sync_data(self):
+        """将设备上的历史数据同步到本地数据库"""
+        # 1. 查找本地最后一条数据的 timestamp
+        last_ts = 0
+        query = QSqlQuery("SELECT MAX(created_at) FROM health_data", self.db)
+        if query.exec() and query.next():
+            val = query.value(0)
+            if val:
+                try:
+                    dt = datetime.strptime(val, "%Y-%m-%d %H:%M:%S")
+                    last_ts = int(dt.timestamp())
+                except Exception:
+                    pass
+        
+        # 2. 显示进度条
+        self.progress_dialog = QProgressDialog("正在请求同步...", "取消", 0, 100, self)
+        self.progress_dialog.setWindowModality(Qt.WindowModal)
+        self.progress_dialog.setMinimumDuration(0)
+        self.progress_dialog.setValue(0)
+        self.progress_dialog.canceled.connect(self._cancel_sync)
+        self.progress_dialog.show()
+        
+        self.sync_received_count = 0
+        self.sync_total = 0
+
+        # 3. 发送请求信号
+        self.request_sync.emit(last_ts)
+
+    def _cancel_sync(self):
+        self.sync_received_count = 0
+        # 可以在此处发送停止同步的指令给设备，如果协议支持的话
+
+    def on_sync_start(self, total):
+        self.sync_total = total
+        self.sync_received_count = 0
+        self.progress_dialog.setLabelText(f"准备同步 {total} 条记录...")
+        self.progress_dialog.setMaximum(total if total > 0 else 100)
+        
+        #开启事务以加速批量插入
+        QSqlQuery("PRAGMA synchronous = OFF", self.db).exec()
+        self.db.transaction()
+
+    def on_sync_batch(self, sent_count, data):
+        if self.progress_dialog.wasCanceled():
+            return
+
+        record_size = 17 # 13 bytes metrics + 4 bytes timestamp
+        if len(data) % record_size != 0:
+            print(f"Warning: Batch data length {len(data)} is not multiple of {record_size}")
+        
+        num_records = len(data) // record_size
+        
+        query = QSqlQuery(self.db)
+        query.prepare("""
+            INSERT INTO health_data (
+                created_at, heartrate, spo2, bk, fatigue, systolic, diastolic, 
+                cardiac, resistance, rr_interval, sdnn, rmssd, nn50, pnn50
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """)
+        
+        for i in range(num_records):
+            chunk = data[i*record_size : (i+1)*record_size]
+            try:
+                # <13B I
+                unpacked = struct.unpack('<BBBBBBBBBBBBBI', chunk)
+                metrics = unpacked[:13]
+                ts = unpacked[13]
+                
+                ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+                
+                query.addBindValue(ts_str)
+                for m in metrics:
+                    query.addBindValue(m)
+                
+                if not query.exec():
+                   print(f"Insert error: {query.lastError().text()}")
+                
+                self.sync_received_count += 1
+            except struct.error:
+                print("Error unpacking record in batch")
+        
+        self.progress_dialog.setValue(self.sync_received_count)
+        self.progress_dialog.setLabelText(f"已同步 {self.sync_received_count}/{self.sync_total}...")
+
+    def on_sync_end(self, total, flag):
+        self.db.commit()
+        QSqlQuery("PRAGMA synchronous = FULL", self.db).exec()
+        
+        self.progress_dialog.setValue(self.sync_total)
+        self.progress_dialog.close()
+        
+        # 刷新界面
+        self._get_total_rows()
+        self.total_pages = math.ceil(self.total_rows / self.page_size) if self.page_size > 0 else 0
+        self._go_to_page(1)
+        
+        # 防止重复弹窗，检查是否已取消
+        if not self.progress_dialog.wasCanceled():
+             QMessageBox.information(self, "同步完成", 
+                f"同步结束。\n服务端总数: {total}\n接收条数: {self.sync_received_count}")
 
     def export_data(self):
         """导出所有历史数据到 CSV 文件"""
