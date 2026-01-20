@@ -97,19 +97,21 @@ class ConfigHandler:
             return self.config.get('SERIAL', 'com').strip("'\"")
     
     def get_time_sync_interval(self) -> int:
-        """获取时间同步间隔（分钟），默认30分钟"""
+        """获取时间同步间隔（分钟），默认10分钟"""
+        default_value = 10
         try:
-            return self.config.getint('SERIAL', 'time_sync_interval', fallback=30)
+            # 检查配置项是否存在
+            if not self.config.has_option('SERIAL', 'time_sync_interval'):
+                # 不存在则设置默认值并保存
+                self.config.set('SERIAL', 'time_sync_interval', str(default_value))
+                with open(self.config_file, 'w') as f:
+                    self.config.write(f)
+                print(f"已添加默认配置 time_sync_interval = {default_value}")
+                return default_value
+            return self.config.getint('SERIAL', 'time_sync_interval')
         except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
-            return 30
+            return default_value
 
-    def get_api_key(self, platform_key: str) -> str:
-        """获取 API Key (兼容旧代码，建议直接使用 get_platform_config)"""
-        try:
-            # 尝试从对应平台 section 获取
-            return self.config.get(platform_key.lower(), 'api_key').strip("'\"")
-        except (configparser.NoSectionError, configparser.NoOptionError):
-            return ""
 
     def get_ai_platform(self) -> str:
         """获取当前 AI 平台"""
