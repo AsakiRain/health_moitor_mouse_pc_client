@@ -14,6 +14,10 @@ from PySide6.QtGui import QAction, QPixmap, QFont, QIcon
 from utils import user_data_path, resource_path, create_emoji_icon
 from database_handler import DatabaseHandler
 
+
+INTERVAL_TIMSTAMPS = 30 #汇聚数据的时间间隔，单位分钟
+
+
 class ReportListDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         super().paint(painter, option, index)
@@ -98,41 +102,35 @@ class ReportGeneratorThread(QThread):
                 break
 
     def run(self):
+        # 让调试器附加到此线程（调试时启用，发布时可注释掉）
+        # try:
+        #     import debugpy
+        #     debugpy.debug_this_thread()
+        # except:
+        #     pass
+        
         # 延迟导入，避免阻塞主窗口加载
         import pandas as pd
         import data_plot
         import data_ai_analysis
+        from database_handler import DatabaseHandler
 
         try:
             self.progress_signal.emit("正在读取健康数据...", 10)
-            # 1. 读取健康检测数据，数据范围为最近50行
-            conn = sqlite3.connect(self.db_path)
-            query = """
-            SELECT * FROM health_data ORDER BY id DESC LIMIT 50
-            """
-            df = pd.read_sql_query(query, conn)
-            conn.close()
-
-            if df.empty:
-                self.finished_signal.emit(False, "没有找到健康数据", {})
-                return
-
-            # 2. 清洗数据，剔除数据中为0的数据行
-            main_indicators = ['heartrate', 'spo2', 'fatigue']
-            valid_indicators = [col for col in main_indicators if col in df.columns]
             
-            if valid_indicators:
-                # 剔除主要指标全为0的行
-                df_clean = df[~((df[valid_indicators] == 0).all(axis=1))].copy()
-            else:
-                df_clean = df.copy()
-
-            # 检查有效数据行比例
-            if len(df) > 0:
-                valid_ratio = len(df_clean) / len(df)
-                if valid_ratio < 0.9:
-                    self.finished_signal.emit(False, f"有效数据不足 90% (当前: {valid_ratio:.1%})，无法生成报告", {})
-                    return
+            # 1. 使用 DatabaseHandler 的汇聚方法读取数据
+            db_handler = DatabaseHandler()
+            aggregated_records = db_handler.load_aggregated_for_analysis(
+                interval_minutes=INTERVAL_TIMSTAMPS,   # 每 INTERVAL_TIMSTAMPS 分钟汇聚为 1 条
+                max_records=50         # 最多返回 50 条汇聚后的记录
+            )
+            
+            if not aggregated_records:
+                self.finished_signal.emit(False, "没有找到足够的健康数据", {})
+                return
+            
+            # 转换为 DataFrame
+            df_clean = pd.DataFrame(aggregated_records)
             
             self.progress_signal.emit("正在生成图表...", 30)
             # 3. 调用 data_plot.py 生成图片 (返回二进制数据)

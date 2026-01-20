@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import csv
 from datetime import datetime
 from utils import user_data_path
 
@@ -247,6 +248,181 @@ class DatabaseHandler:
         except sqlite3.Error as e:
             print(f"从数据库读取失败: {e}")
             return None
+
+    def load_aggregated_for_analysis(self, interval_minutes: int = 10, max_records: int = 50) -> list:
+        """
+        从数据库读取健康数据，按时间间隔分组汇聚。
+        用于 AI 分析，将秒级数据按时间段汇聚为更少的数据点。
+        
+        Args:
+            interval_minutes: 汇聚时间间隔（分钟），默认 10 分钟
+            max_records: 最多返回的汇聚记录数，默认 50
+        
+        Returns:
+            汇聚后的记录列表，每条记录是一个字典
+        """
+        if not os.path.exists(self.db_file):
+            print(f"未找到数据库文件 '{self.db_file}'。")
+            return []
+        
+        try:
+            conn = sqlite3.connect(self.db_file)
+            cursor = conn.cursor()
+            
+            # 查询所有有效记录（按时间正序）
+            cursor.execute("""
+                SELECT created_at, heartrate, spo2, bk, fatigue, systolic, diastolic,
+                       cardiac, resistance, rr_interval, sdnn, rmssd, nn50, pnn50, timestamp
+                FROM health_data 
+                WHERE heartrate > 0 AND spo2 > 0
+                ORDER BY timestamp ASC
+            """)
+            rows = cursor.fetchall()
+            conn.close()
+            
+            if not rows:
+                print("数据库中无有效健康数据。")
+                return []
+            
+            # 统计器类（与 load_recent_averaged 相同）
+            class StatTracker:
+                def __init__(self):
+                    self.sum = 0
+                    self.count = 0
+                    self.min_val = float('inf')
+                    self.max_val = 0
+                
+                def add(self, val):
+                    if val == 0:
+                        return
+                    self.sum += val
+                    self.count += 1
+                    if val < self.min_val:
+                        self.min_val = val
+                    if val > self.max_val:
+                        self.max_val = val
+                
+                def get_avg(self):
+                    if self.count == 0:
+                        return 0
+                    if self.count <= 2:
+                        return self.sum // self.count
+                    return (self.sum - self.max_val - int(self.min_val)) // (self.count - 2)
+            
+            def aggregate_group(group_rows):
+                """汇聚一组记录"""
+                if not group_rows:
+                    return None
+                
+                sum_heartrate, cnt_heartrate = 0, 0
+                sum_spo2, cnt_spo2 = 0, 0
+                st_bk = StatTracker()
+                st_fatigue = StatTracker()
+                st_systolic = StatTracker()
+                st_diastolic = StatTracker()
+                st_cardiac = StatTracker()
+                st_resistance = StatTracker()
+                st_rr_interval = StatTracker()
+                st_sdnn = StatTracker()
+                st_rmssd = StatTracker()
+                st_nn50 = StatTracker()
+                st_pnn50 = StatTracker()
+                
+                first_timestamp = group_rows[0][0]  # 使用组内第一条的时间
+                
+                for row in group_rows:
+                    (created_at, heartrate, spo2, bk, fatigue, systolic, diastolic,
+                     cardiac, resistance, rr_interval, sdnn, rmssd, nn50, pnn50, ts) = row
+                    
+                    sum_heartrate += heartrate
+                    cnt_heartrate += 1
+                    sum_spo2 += spo2
+                    cnt_spo2 += 1
+                    
+                    st_bk.add(bk)
+                    st_fatigue.add(fatigue)
+                    st_systolic.add(systolic)
+                    st_diastolic.add(diastolic)
+                    st_cardiac.add(cardiac)
+                    st_resistance.add(resistance)
+                    st_rr_interval.add(rr_interval)
+                    st_sdnn.add(sdnn)
+                    st_rmssd.add(rmssd)
+                    st_nn50.add(nn50)
+                    st_pnn50.add(pnn50)
+                
+                return {
+                    'created_at': first_timestamp,
+                    'heartrate': sum_heartrate // cnt_heartrate if cnt_heartrate else 0,
+                    'spo2': sum_spo2 // cnt_spo2 if cnt_spo2 else 0,
+                    'bk': st_bk.get_avg(),
+                    'fatigue': st_fatigue.get_avg(),
+                    'systolic': st_systolic.get_avg(),
+                    'diastolic': st_diastolic.get_avg(),
+                    'cardiac': st_cardiac.get_avg(),
+                    'resistance': st_resistance.get_avg(),
+                    'rr_interval': st_rr_interval.get_avg(),
+                    'sdnn': st_sdnn.get_avg(),
+                    'rmssd': st_rmssd.get_avg(),
+                    'nn50': st_nn50.get_avg(),
+                    'pnn50': st_pnn50.get_avg()
+                }
+            
+            # 按时间间隔分组
+            interval_seconds = interval_minutes * 60
+            groups = []
+            current_group = []
+            group_start_ts = None
+            
+            for row in rows:
+                ts = row[14]  # timestamp 字段
+                
+                if group_start_ts is None:
+                    group_start_ts = ts
+                
+                # 检查是否在当前时间段内
+                if ts < group_start_ts + interval_seconds:
+                    current_group.append(row)
+                else:
+                    # 保存当前组，开始新组
+                    if current_group:
+                        groups.append(current_group)
+                    current_group = [row]
+                    group_start_ts = ts
+            
+            # 别忘了最后一组
+            if current_group:
+                groups.append(current_group)
+            
+            # 汇聚每组数据
+            aggregated_records = []
+            for group in groups:
+                record = aggregate_group(group)
+                if record:
+                    aggregated_records.append(record)
+            
+            # 只取最近的 max_records 条
+            if len(aggregated_records) > max_records:
+                aggregated_records = aggregated_records[-max_records:]
+
+            #汇聚后的记录输出csv用于调试
+            
+            debug_csv_path = "./tmp/aggregated_records_debug.csv"
+            with open(debug_csv_path, mode='w', newline='', encoding='utf-8') as csvfile:
+                fieldnames = ['created_at', 'heartrate', 'spo2', 'bk', 'fatigue', 'systolic', 'diastolic',
+                              'cardiac', 'resistance', 'rr_interval', 'sdnn', 'rmssd', 'nn50', 'pnn50']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                for record in aggregated_records:
+                    writer.writerow(record)
+
+            
+            print(f"数据汇聚完成：{len(rows)} 条原始记录 -> {len(aggregated_records)} 条汇聚记录（每 {interval_minutes} 分钟）")
+            return aggregated_records
+            
+        except sqlite3.Error as e:
+            print(f"从数据库读取失败: {e}")
+            return []
 
     def get_last_timestamp(self) -> int:
         """
