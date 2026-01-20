@@ -300,8 +300,10 @@ class HistoryWindow(QDialog):
         
         # 2. 显示进度条
         self.progress_dialog = QProgressDialog("正在请求同步...", "取消", 0, 100, self)
+        self.progress_dialog.setWindowTitle("数据同步")
         self.progress_dialog.setWindowModality(Qt.WindowModal)
         self.progress_dialog.setMinimumDuration(0)
+        self.progress_dialog.setMinimumWidth(400)  # 设置最小宽度
         self.progress_dialog.setValue(0)
         self.progress_dialog.canceled.connect(self._cancel_sync)
         self.progress_dialog.show()
@@ -317,6 +319,10 @@ class HistoryWindow(QDialog):
         # 可以在此处发送停止同步的指令给设备，如果协议支持的话
 
     def on_sync_start(self, total):
+        if not self.db.isOpen():
+            print("Warning: on_sync_start called but database is not open")
+            return
+        
         self.sync_total = total
         self.sync_received_count = 0
         self.progress_dialog.setLabelText(f"准备同步 {total} 条记录...")
@@ -327,10 +333,38 @@ class HistoryWindow(QDialog):
         self.db.transaction()
 
     def on_sync_batch(self, sent_count, data):
+        if not self.db.isOpen():
+            print("Warning: on_sync_batch called but database is not open")
+            return
+        
         if self.progress_dialog.wasCanceled():
             return
 
-        record_size = 17 # 13 bytes metrics + 4 bytes timestamp
+        # HealthDataRecord 结构体大小 (pragma pack(1), 无填充)：
+        # HealthData (87 bytes) + timestamp (4 bytes) = 91 bytes
+        # HealthData 布局:
+        #   [0-63]   acdata[64]    - 64 bytes (int8_t[], 心律波形)
+        #   [64]     heartrate     - 1 byte
+        #   [65]     spo2          - 1 byte
+        #   [66]     bk            - 1 byte
+        #   [67]     fatigue       - 1 byte
+        #   [68]     rsv1          - 1 byte (协议保留)
+        #   [69]     rsv2          - 1 byte (协议保留)
+        #   [70]     systolic      - 1 byte
+        #   [71]     diastolic     - 1 byte
+        #   [72]     cardiac       - 1 byte
+        #   [73]     resistance    - 1 byte
+        #   [74]     rr_interval   - 1 byte
+        #   [75]     sdnn          - 1 byte
+        #   [76]     rmssd         - 1 byte
+        #   [77]     nn50          - 1 byte
+        #   [78]     pnn50         - 1 byte
+        #   [79-84]  rra[6]        - 6 bytes (最近RR间期)
+        #   [85]     rsv3          - 1 byte (协议保留)
+        #   [86]     state         - 1 byte (模块状态)
+        # [87-90]  timestamp       - 4 bytes (uint32_t)
+        record_size = 91
+        
         if len(data) % record_size != 0:
             print(f"Warning: Batch data length {len(data)} is not multiple of {record_size}")
         
@@ -339,41 +373,75 @@ class HistoryWindow(QDialog):
         query = QSqlQuery(self.db)
         query.prepare("""
             INSERT INTO health_data (
-                created_at, heartrate, spo2, bk, fatigue, systolic, diastolic, 
-                cardiac, resistance, rr_interval, sdnn, rmssd, nn50, pnn50
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, acdata, heartrate, spo2, bk, fatigue,
+                rsv1, rsv2, systolic, diastolic, cardiac, resistance,
+                rr_interval, sdnn, rmssd, nn50, pnn50, rra, rsv3, state, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """)
         
         for i in range(num_records):
             chunk = data[i*record_size : (i+1)*record_size]
             try:
-                # <13B I
-                unpacked = struct.unpack('<BBBBBBBBBBBBBI', chunk)
-                metrics = unpacked[:13]
-                ts = unpacked[13]
+                # 完整解析 HealthDataRecord 结构体 (91 bytes, pragma pack(1))
+                acdata = chunk[0:64]         # 64 bytes 波形数据
+                metrics = chunk[64:79]       # 15 bytes: hr, spo2, bk, fatigue, rsv1, rsv2, sys, dia, cardiac, resistance, rr, sdnn, rmssd, nn50, pnn50
+                rra = chunk[79:85]           # 6 bytes RR间期数组
+                rsv3 = chunk[85]             # 1 byte
+                state = chunk[86]            # 1 byte
+                ts = struct.unpack('<I', chunk[87:91])[0]  # 4 bytes timestamp
+                
+                # 解析 15 个单字节指标
+                hr, spo2, bk, fatigue, rsv1, rsv2, systolic, diastolic, cardiac, \
+                resistance, rr_interval, sdnn, rmssd, nn50, pnn50 = struct.unpack('<15B', metrics)
                 
                 ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
                 
-                query.addBindValue(ts_str)
-                for m in metrics:
-                    query.addBindValue(m)
+                # 绑定所有参数
+                query.addBindValue(ts_str)          # created_at
+                query.addBindValue(bytes(acdata))   # acdata (BLOB)
+                query.addBindValue(hr)
+                query.addBindValue(spo2)
+                query.addBindValue(bk)
+                query.addBindValue(fatigue)
+                query.addBindValue(rsv1)
+                query.addBindValue(rsv2)
+                query.addBindValue(systolic)
+                query.addBindValue(diastolic)
+                query.addBindValue(cardiac)
+                query.addBindValue(resistance)
+                query.addBindValue(rr_interval)
+                query.addBindValue(sdnn)
+                query.addBindValue(rmssd)
+                query.addBindValue(nn50)
+                query.addBindValue(pnn50)
+                query.addBindValue(bytes(rra))      # rra (BLOB)
+                query.addBindValue(rsv3)
+                query.addBindValue(state)
+                query.addBindValue(ts)              # timestamp (原始值)
                 
                 if not query.exec():
                    print(f"Insert error: {query.lastError().text()}")
                 
                 self.sync_received_count += 1
-            except struct.error:
-                print("Error unpacking record in batch")
+            except struct.error as e:
+                print(f"Error unpacking record in batch: {e}")
         
         self.progress_dialog.setValue(self.sync_received_count)
         self.progress_dialog.setLabelText(f"已同步 {self.sync_received_count}/{self.sync_total}...")
 
     def on_sync_end(self, total, flag):
+        # 检查数据库是否仍然打开
+        if not self.db.isOpen():
+            print("Warning: on_sync_end called but database is not open")
+            return
+        
         self.db.commit()
         QSqlQuery("PRAGMA synchronous = FULL", self.db).exec()
         
-        self.progress_dialog.setValue(self.sync_total)
-        self.progress_dialog.close()
+        # 安全关闭进度对话框
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+            self.progress_dialog.setValue(self.sync_total)
+            self.progress_dialog.close()
         
         # 刷新界面
         self._get_total_rows()
@@ -381,7 +449,7 @@ class HistoryWindow(QDialog):
         self._go_to_page(1)
         
         # 防止重复弹窗，检查是否已取消
-        if not self.progress_dialog.wasCanceled():
+        if hasattr(self, 'progress_dialog') and self.progress_dialog and not self.progress_dialog.wasCanceled():
              QMessageBox.information(self, "同步完成", 
                 f"同步结束。\n服务端总数: {total}\n接收条数: {self.sync_received_count}")
 

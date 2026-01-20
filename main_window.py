@@ -4,7 +4,7 @@ from time import sleep
 
 from PySide6.QtWidgets import (
     QMainWindow, QSystemTrayIcon, QMenu, QPushButton, QMessageBox,
-    QLabel, QTextEdit, QApplication
+    QLabel, QTextEdit, QApplication, QProgressDialog
 )
 from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QFont, QFontMetrics
 from PySide6.QtCore import Qt, QTimer, QFile, QThread
@@ -22,6 +22,8 @@ from utils import resource_path
 
 
 LOGGING_ENABLED = True
+COLLTIMES = 100  # 数据采集时间，单位秒
+ACK_TIMEOUT_MS = 3000  # ACK 超时时间，单位毫秒
 
 
 class MainWindow(QMainWindow):
@@ -60,10 +62,17 @@ class MainWindow(QMainWindow):
         else:
             print("警告: 未在 UI 文件中找到名为 'btn_mousedata' 的 QPushButton。")
             
+        # HealthData 结构体字段（与设备端一致）
+        # acdata 单独存储为 BLOB，其他为整数
         self.metric_keys = [
-            'heartrate', 'spo2', 'bk', 'fatigue', 'systolic', 'diastolic', 
-            'cardiac', 'resistance', 'rr_interval', 'sdnn', 'rmssd', 
-            'nn50', 'pnn50', 'timestamp'
+            'acdata',       # 心律波形 64字节 BLOB
+            'heartrate', 'spo2', 'bk', 'fatigue',
+            'rsv1', 'rsv2', # 协议保留
+            'systolic', 'diastolic', 'cardiac', 'resistance',
+            'rr_interval', 'sdnn', 'rmssd', 'nn50', 'pnn50',
+            'rra',          # 最近RR间期 6字节 BLOB
+            'rsv3', 'state',
+            'timestamp'     # 设备端时间戳
         ]
         
         ui_label_names = {
@@ -133,9 +142,11 @@ class MainWindow(QMainWindow):
         self.time_sync_timer = QTimer(self)
         self.time_sync_timer.timeout.connect(self._on_time_sync)
         
-        # 时间同步定时器
-        self.time_sync_timer = QTimer(self)
-        self.time_sync_timer.timeout.connect(self._on_time_sync)
+        # ACK 超时定时器（用于检测设备连接状态）
+        self.ack_timeout_timer = QTimer(self)
+        self.ack_timeout_timer.setSingleShot(True)
+        self.ack_timeout_timer.setInterval(ACK_TIMEOUT_MS)
+        self.ack_timeout_timer.timeout.connect(self._on_ack_timeout)
         
         # --- 状态栏 ---
         self._init_status_bar()
@@ -145,7 +156,6 @@ class MainWindow(QMainWindow):
         self.db_handler = DatabaseHandler(metric_keys=self.metric_keys)
         self._init_serial()
 
-        self.startup_data_loaded = False
         self.history_window_instance = None # 用于持有历史窗口的实例
         self.startup_sequence()
         
@@ -172,8 +182,6 @@ class MainWindow(QMainWindow):
     def startup_sequence(self):
         """应用启动时的操作序列"""
         self._log_to_ui("应用启动... 优先从设备获取最新数据。")
-        self.startup_data_loaded = False
-        self.startup_mouse_loaded = False
         
         try:
             com_port = self.config_handler.get_com_port()
@@ -190,32 +198,169 @@ class MainWindow(QMainWindow):
             self.time_sync_timer.start()
             self._log_to_ui(f"已启动时间同步定时器，间隔 {sync_interval} 分钟。")
             
-            QTimer.singleShot(100, lambda: self.serial_worker.send_frame(const.CMD_GET_LAST_HEALTH_DATA))
-            QTimer.singleShot(120, lambda: self.serial_worker.send_frame(const.CMD_GET_MOUSE_DATA))
-            QTimer.singleShot(5000, self.check_startup_data)
+            # 启动时发起一次数据同步
+            QTimer.singleShot(100, self._startup_sync_data)
+            
+            # 获取鼠标数据
+            QTimer.singleShot(150, lambda: self._send_with_ack_check(const.CMD_GET_MOUSE_DATA))
 
         except Exception as e:
             self._log_to_ui(f"启动时连接串口失败: {e}。尝试从本地文件加载...")
             self._load_history_from_db()
             self._load_mouse_from_db()
 
-    def check_startup_data(self):
-        """在启动超时后检查数据是否已加载"""
-        if not self.startup_data_loaded:
-            self._log_to_ui("从设备获取数据超时，尝试从本地文件加载...")
-            self._load_history_from_db()
-        if not self.startup_mouse_loaded:
-            self._log_to_ui("从设备获取鼠标数据超时，尝试从数据库加载...")
-            self._load_mouse_from_db()
+    def _startup_sync_data(self):
+        """启动时发起数据同步"""
+        # 初始化同步相关变量
+        self._sync_in_progress = True  # 同步进行中标志
+        self._sync_progress = None
+        self._sync_total = 0
+        self._sync_received = 0
+        self._sync_db_conn = None
+        
+        # 查找本地最后一条数据的 timestamp
+        last_ts = self.db_handler.get_last_timestamp()
+        payload = struct.pack('<I', last_ts)
+        self._send_with_ack_check(const.CMD_SYNC_HEALTH_DATA, payload)
+        self._log_to_ui(f"启动同步数据，Last Timestamp: {last_ts}")
+        
+        # 连接同步信号（一次性）
+        self.serial_worker.sync_start.connect(self._on_startup_sync_start)
+        self.serial_worker.sync_batch.connect(self._on_startup_sync_batch)
+        self.serial_worker.sync_end.connect(self._on_startup_sync_complete)
+
+    def _on_startup_sync_start(self, total_count: int):
+        """启动同步开始"""
+        self._on_device_response()  # 收到设备响应，更新为已连接
+        self._log_to_ui(f"开始同步，预计 {total_count} 条记录")
+        
+        # 创建进度条对话框
+        self._sync_total = total_count
+        self._sync_received = 0
+        self._sync_progress = QProgressDialog("正在同步数据...", "取消", 0, total_count if total_count > 0 else 100, self)
+        self._sync_progress.setWindowTitle("数据同步")
+        self._sync_progress.setWindowModality(Qt.WindowModal)
+        self._sync_progress.setMinimumDuration(0)
+        self._sync_progress.setMinimumWidth(400)  # 设置最小宽度
+        self._sync_progress.setValue(0)
+        self._sync_progress.setLabelText(f"准备同步 {total_count} 条记录...")
+        self._sync_progress.show()
+        
+        # 开启数据库事务
+        self._sync_db_conn = None
+        try:
+            import sqlite3
+            self._sync_db_conn = sqlite3.connect(self.db_handler.db_file)
+            self._sync_db_conn.execute("PRAGMA synchronous = OFF")
+            self._sync_db_conn.execute("BEGIN TRANSACTION")
+        except Exception as e:
+            self._log_to_ui(f"启动同步事务失败: {e}")
+
+    def _on_startup_sync_batch(self, sent_count: int, data: bytes):
+        """启动同步批量数据处理"""
+        # 检查同步是否仍在进行
+        if not getattr(self, '_sync_in_progress', False):
+            return
+        
+        if self._sync_db_conn is None:
+            return
+        
+        # 检查是否取消
+        if self._sync_progress is not None and self._sync_progress.wasCanceled():
+            return
+        
+        record_size = 91
+        if len(data) % record_size != 0:
+            self._log_to_ui(f"警告: 批量数据长度 {len(data)} 不是 {record_size} 的倍数")
+        
+        num_records = len(data) // record_size
+        cursor = self._sync_db_conn.cursor()
+        
+        for i in range(num_records):
+            chunk = data[i*record_size : (i+1)*record_size]
+            try:
+                from datetime import datetime
+                
+                acdata = chunk[0:64]
+                metrics = chunk[64:79]
+                rra = chunk[79:85]
+                rsv3 = chunk[85]
+                state = chunk[86]
+                ts = struct.unpack('<I', chunk[87:91])[0]
+                
+                hr, spo2, bk, fatigue, rsv1, rsv2, systolic, diastolic, cardiac, \
+                resistance, rr_interval, sdnn, rmssd, nn50, pnn50 = struct.unpack('<15B', metrics)
+                
+                ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+                
+                cursor.execute("""
+                    INSERT INTO health_data (
+                        created_at, acdata, heartrate, spo2, bk, fatigue,
+                        rsv1, rsv2, systolic, diastolic, cardiac, resistance,
+                        rr_interval, sdnn, rmssd, nn50, pnn50, rra, rsv3, state, timestamp
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (ts_str, acdata, hr, spo2, bk, fatigue, rsv1, rsv2, 
+                      systolic, diastolic, cardiac, resistance, rr_interval, 
+                      sdnn, rmssd, nn50, pnn50, rra, rsv3, state, ts))
+            except Exception as e:
+                self._log_to_ui(f"解析/保存记录失败: {e}")
+        
+        # 更新进度条（使用 try-except 防止竞态条件）
+        self._sync_received = sent_count
+        try:
+            if self._sync_progress is not None:
+                self._sync_progress.setValue(sent_count)
+                total = getattr(self, '_sync_total', 0)
+                self._sync_progress.setLabelText(f"已同步 {sent_count}/{total} 条记录...")
+        except (AttributeError, RuntimeError):
+            pass  # 进度条可能已关闭
+
+    def _on_startup_sync_complete(self, total_received: int):
+        """启动同步完成后的回调"""
+        # 标记同步结束
+        self._sync_in_progress = False
+        
+        # 关闭进度条
+        if self._sync_progress is not None:
+            total = getattr(self, '_sync_total', 0)
+            self._sync_progress.setValue(total)
+            self._sync_progress.close()
+            self._sync_progress = None
+        
+        # 断开同步信号
+        try:
+            self.serial_worker.sync_start.disconnect(self._on_startup_sync_start)
+            self.serial_worker.sync_batch.disconnect(self._on_startup_sync_batch)
+            self.serial_worker.sync_end.disconnect(self._on_startup_sync_complete)
+        except RuntimeError:
+            pass  # 已断开
+        
+        # 提交数据库事务
+        if hasattr(self, '_sync_db_conn') and self._sync_db_conn:
+            try:
+                self._sync_db_conn.commit()
+                self._sync_db_conn.close()
+                self._log_to_ui("同步数据已写入数据库")
+            except Exception as e:
+                self._log_to_ui(f"提交数据库事务失败: {e}")
+            self._sync_db_conn = None
+        
+        if total_received > 0:
+            self._log_to_ui(f"启动同步完成，共同步 {total_received} 条记录")
+        else:
+            self._log_to_ui("启动同步完成，无新数据")
+        
+        # 不论是否有新数据，都从数据库加载并显示
+        self._load_history_from_db()
 
     def _load_history_from_db(self):
-        """从数据库读取并显示最后一条历史数据"""
-        last_record = self.db_handler.load_last_record()
-        if last_record:
-            timestamp = last_record.pop('created_at')
-            self._log_to_ui(f"从数据库加载历史数据 ({timestamp}): {last_record}")
-            self._update_data_labels(last_record)
-            self.startup_data_loaded = True
+        """从数据库读取最近50条历史数据，计算去极值平均后显示"""
+        avg_record = self.db_handler.load_recent_averaged(50)
+        if avg_record:
+            timestamp = avg_record.pop('created_at')
+            valid_count = avg_record.pop('_valid_count', 0)
+            self._log_to_ui(f"从数据库加载健康数据（{valid_count}条平均, 最新: {timestamp}）")
+            self._update_data_labels(avg_record)
         else:
             self._log_to_ui("数据库中无历史数据。")
 
@@ -240,7 +385,6 @@ class MainWindow(QMainWindow):
                     f"L={mouse['left_click']}, M={mouse['mid_click']}, R={mouse['right_click']}"
                 )
             self._update_mouse_labels(mouse['distance'], mouse['left_click'], mouse['mid_click'], mouse['right_click'])
-            self.startup_mouse_loaded = True
         else:
             self._log_to_ui("数据库中无鼠标数据。")
 
@@ -258,14 +402,27 @@ class MainWindow(QMainWindow):
                 self.serial_worker.connect_serial(com_port)
                 if self.serial_worker.is_running and not self.serial_thread.isRunning():
                     self.serial_thread.start()
-                QTimer.singleShot(100, lambda: self.serial_worker.send_frame(const.CMD_START_HEALTH_CHECK))
+                # 先发送检测时长，再发送开始命令
+                QTimer.singleShot(100, lambda: self._send_health_check_with_duration())
             else:
-                self.serial_worker.send_frame(const.CMD_START_HEALTH_CHECK)
+                self._send_health_check_with_duration()
         except Exception as e:
             self._show_error(f"开始体检失败: {e}")
             if self.start_button:
                 self.start_button.setEnabled(True)
                 self.start_button.setText("开始体检")
+
+    def _send_health_check_with_duration(self, duration: int = COLLTIMES):
+        """发送检测时长和开始检测命令"""
+        # 发送检测时长 (1字节，单位：秒，范围 1-255)
+        duration = max(1, min(255, duration))
+        self.health_check_duration = duration  # 保存时长供倒计时使用
+        payload = struct.pack('<B', duration)
+        self._send_with_ack_check(const.CMD_SET_HEALTH_CHECK_DURATION, payload)
+        self._log_to_ui(f"设置检测时长: {duration} 秒")
+        
+        # 延迟 50ms 后发送开始命令
+        QTimer.singleShot(50, lambda: self._send_with_ack_check(const.CMD_START_HEALTH_CHECK))
 
     def on_mousedata_button_clicked(self):
         """处理刷新鼠标数据按钮点击事件"""
@@ -276,7 +433,7 @@ class MainWindow(QMainWindow):
                 self.serial_worker.connect_serial(com_port)
                 if self.serial_worker.is_running and not self.serial_thread.isRunning():
                     self.serial_thread.start()
-            self.serial_worker.send_frame(const.CMD_GET_MOUSE_DATA)
+            self._send_with_ack_check(const.CMD_GET_MOUSE_DATA)
         except Exception as e:
             self._show_error(f"刷新鼠标数据失败: {e}")
 
@@ -305,12 +462,16 @@ class MainWindow(QMainWindow):
             print(message)
 
     def on_ack_received(self, original_cmd: int, status_code: int):
+        # 收到 ACK，取消超时定时器并更新状态为已连接
+        self._on_device_response()
+        
         self._log_to_ui(f"收到 ACK: 原始命令={hex(original_cmd)}, 状态码={status_code}")
         if original_cmd == const.CMD_START_HEALTH_CHECK:
             if status_code == const.ACK_SUCCESS:
                 self._log_to_ui("设备已确认开始健康监测。等待数据...")
-                # 启动 90 秒倒计时
-                self.countdown_remaining = 90
+                # 使用实际设置的检测时长启动倒计时
+                duration = getattr(self, 'health_check_duration', COLLTIMES)
+                self.countdown_remaining = duration
                 if self.start_button:
                     self.start_button.setEnabled(False)
                     self.start_button.setText(f"{self.countdown_remaining}秒")
@@ -327,13 +488,40 @@ class MainWindow(QMainWindow):
                 self._reset_detection_state()
 
     def on_detection_timeout(self):
-        self._log_to_ui("错误: 健康监测超时 (90秒)，请重试。")
+        self._log_to_ui(f"错误: 健康监测超时 ({COLLTIMES} 秒)，请重试。")
         self._reset_detection_state()
+
+    def _on_ack_timeout(self):
+        """发送指令后未在规定时间内收到 ACK，认为设备断开"""
+        self._log_to_ui("警告: 未收到设备 ACK 响应，设备可能已断开")
+        self._update_status_disconnected()
+
+    def _on_device_response(self):
+        """收到设备任何有效响应时调用，取消 ACK 超时并更新连接状态"""
+        if self.ack_timeout_timer.isActive():
+            self.ack_timeout_timer.stop()
+        self._update_status_connected()
+
+    def _send_with_ack_check(self, cmd: int, payload: bytes = b''):
+        """发送指令并启动 ACK 超时检测"""
+        self.serial_worker.send_frame(cmd, payload)
+        # 启动 ACK 超时定时器
+        self.ack_timeout_timer.start()
 
     def show_history_window(self):
         """显示历史数据窗口"""
         # 检查实例是否存在或已不可见，防止创建多个窗口
         if self.history_window_instance is None or not self.history_window_instance.isVisible():
+            # 如果旧窗口存在但不可见，先断开旧的信号连接
+            if self.history_window_instance is not None:
+                try:
+                    self.history_window_instance.request_sync.disconnect(self.send_sync_command)
+                    self.serial_worker.sync_start.disconnect(self.history_window_instance.on_sync_start)
+                    self.serial_worker.sync_batch.disconnect(self.history_window_instance.on_sync_batch)
+                    self.serial_worker.sync_end.disconnect(self.history_window_instance.on_sync_end)
+                except (TypeError, RuntimeError):
+                    pass  # 信号未连接或已断开
+            
             # 将 db_handler 中的 db_file 路径传递给历史窗口
             self.history_window_instance = HistoryWindow(
                 db_path=self.db_handler.db_file, 
@@ -351,36 +539,54 @@ class MainWindow(QMainWindow):
     def send_sync_command(self, timestamp: int):
         """发送同步命令到设备"""
         payload = struct.pack('<I', timestamp)
-        self.serial_worker.send_frame(const.CMD_SYNC_HEALTH_DATA, payload)
+        self._send_with_ack_check(const.CMD_SYNC_HEALTH_DATA, payload)
         self._log_to_ui(f"已请求同步数据，Last Timestamp: {timestamp}")
 
     def on_health_data_received(self, data: bytes):
-        if self.detection_timeout_timer.isActive():
-            self.detection_timeout_timer.stop()
-
-        self.startup_data_loaded = True
-        self._stop_blinking()
-        self._stop_countdown()
+        #self._on_device_response()  # 收到设备数据，更新连接状态
         self._log_to_ui(f"收到健康数据: {data.hex(' ').upper()}")
-            
-        if len(data) >= 16:
+        
+        # 完整 HealthDataRecord 格式 (91 bytes, pragma pack(1))
+        if len(data) == 91:
             try:
-                format_string = '<BBBBBBBBBBBBBI'
-                unpacked_data = struct.unpack(format_string, data)
+                acdata = data[0:64]         # 64 bytes 波形数据
+                metrics = data[64:79]       # 15 bytes
+                rra = data[79:85]           # 6 bytes
+                rsv3 = data[85]
+                state = data[86]
+                ts = struct.unpack('<I', data[87:91])[0]
                 
-                health_metrics = dict(zip(self.metric_keys, unpacked_data))
-                print(health_metrics)
-
-                self._update_data_labels(health_metrics)
-                self.db_handler.save_record_if_new(list(unpacked_data))
+                hr, spo2, bk, fatigue, rsv1, rsv2, systolic, diastolic, cardiac, \
+                resistance, rr_interval, sdnn, rmssd, nn50, pnn50 = struct.unpack('<15B', metrics)
                 
-                # 体检成功，重置状态
-                self._reset_detection_state()
-
+                # 构建完整数据列表（与 metric_keys 对应）
+                full_data = [
+                    acdata, hr, spo2, bk, fatigue, rsv1, rsv2,
+                    systolic, diastolic, cardiac, resistance,
+                    rr_interval, sdnn, rmssd, nn50, pnn50,
+                    rra, rsv3, state, ts
+                ]
+                
+                # 先保存到数据库
+                self.db_handler.save_health_record(full_data)
+                
+                # 再从数据库加载最近50条计算平均值显示
+                self._load_history_from_db()
+                
+                # 收到有效健康数据，停止检测超时计时器
+                if self.detection_timeout_timer.isActive():
+                    self.detection_timeout_timer.stop()
+                
+                # 只有在倒计时结束后（或没有活跃的检测）才重置UI状态
+                # 实时上报时不中断倒计时
+                if not self.countdown_timer.isActive():
+                    self._stop_blinking()
+                    self._reset_detection_state()
+                
             except struct.error as e:
                 self._log_to_ui(f"解析健康数据失败: {e}")
         else:
-            self._log_to_ui(f"警告: 健康数据 payload 长度不正确 (收到 {len(data)} bytes)。")
+            self._log_to_ui(f"警告: 健康数据 payload 长度不正确 (应为 91 bytes, 收到 {len(data)} bytes)。")
 
     def _on_countdown_tick(self):
         if self.countdown_remaining > 0:
@@ -394,28 +600,34 @@ class MainWindow(QMainWindow):
 
         if self.countdown_remaining <= 0 and self.countdown_timer.isActive():
             self.countdown_timer.stop()
+            # 倒计时结束，延迟一小段时间后重置状态（给设备最后发送数据的机会）
+            QTimer.singleShot(2000, self._on_countdown_finished)
 
     def _stop_countdown(self):
         if self.countdown_timer.isActive():
             self.countdown_timer.stop()
         self.countdown_remaining = 0
+
+    def _on_countdown_finished(self):
+        """倒计时结束后的处理"""
+        # 如果按钮还显示"处理中..."，说明还没收到数据或数据已处理完毕，重置状态
+        if self.start_button and self.start_button.text() == "处理中...":
+            self._log_to_ui("检测完成，重置状态。")
+            self._reset_detection_state()
     
     def _on_time_sync(self):
         """定时发送时间同步命令给设备"""
         if self.serial_worker and self.serial_worker.serial_port and self.serial_worker.serial_port.is_open:
             self.serial_worker.send_timestamp()
+            # 启动 ACK 超时定时器
+            self.ack_timeout_timer.start()
         else:
             self._log_to_ui("时间同步失败：串口未连接。")
-    
-    def _on_time_sync(self):
-        """定时发送时间同步命令给设备"""
-        if self.serial_worker and self.serial_worker.serial_port and self.serial_worker.serial_port.is_open:
-            self.serial_worker.send_timestamp()
-        else:
-            self._log_to_ui("时间同步失败：串口未连接。")
+            self._update_status_disconnected()
 
     def on_mouse_data_received(self, payload: bytes):
         """处理收到的鼠标累计数据，更新界面并写入数据库。"""
+        #self._on_device_response()  # 收到设备数据，更新连接状态
         try:
             result = self.mouse_processor.process_payload(payload)
             self._log_to_ui(
@@ -428,7 +640,6 @@ class MainWindow(QMainWindow):
                 result['mid_click'],
                 result['right_click']
             )
-            self.startup_mouse_loaded = True
         except Exception as e:
             self._log_to_ui(f"解析/处理鼠标数据失败: {e}")
 
@@ -523,7 +734,7 @@ class MainWindow(QMainWindow):
         """处理状态图标点击事件"""
         if self.status_label.text() == "已连接":
             self._log_to_ui("手动发送设备状态检测指令...")
-            self.serial_worker.send_frame(const.CMD_DEVICE_STATUS_CHECK)
+            self._send_with_ack_check(const.CMD_DEVICE_STATUS_CHECK)
         else:
             self._log_to_ui("设备未连接，无法发送指令。")
 
