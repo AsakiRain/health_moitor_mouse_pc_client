@@ -631,11 +631,12 @@ class MainWindow(QMainWindow):
         try:
             result = self.mouse_processor.process_payload(payload)
             self._log_to_ui(
-                f"收到鼠标数据: 距离={result['distance_px']}px (~{result['distance_m_str']}), "
-                f"L={result['left_click']}, M={result['mid_click']}, R={result['right_click']}"
+                f"收到鼠标数据: 距离={result['distance_m_str']}, "
+                f"L={result['left_click']}, M={result['mid_click']}, R={result['right_click']}, "
+                f"会话时间={result['session_time_str']}"
             )
             self._update_mouse_labels(
-                result['distance_px'],
+                result['distance_um'],
                 result['left_click'],
                 result['mid_click'],
                 result['right_click']
@@ -659,16 +660,17 @@ class MainWindow(QMainWindow):
                 self.value_labels[key].setText(str(display_value))
         self._log_to_ui(f"界面数据已更新。")
 
-    def _update_mouse_labels(self, distance: int, left: int, mid: int, right: int):
+    def _update_mouse_labels(self, distance_um: int, left: int, mid: int, right: int):
+        """更新鼠标数据标签，距离参数单位为微米"""
         if self.label_distance:
-            # 使用米制字符串展示；若处理器不可用则兜底为像素值
+            # 使用米制字符串展示；若处理器不可用则兜底为微米值
             try:
                 meters_text = None
                 if hasattr(self, 'mouse_processor') and self.mouse_processor:
-                    meters_text = self.mouse_processor.pixels_to_meters_str(distance)
-                self.label_distance.setText(meters_text if meters_text else str(distance))
+                    meters_text = self.mouse_processor.distance_to_meters_str(distance_um)
+                self.label_distance.setText(meters_text if meters_text else str(distance_um))
             except Exception:
-                self.label_distance.setText(str(distance))
+                self.label_distance.setText(str(distance_um))
             
         if self.label_leftclick:
             self.label_leftclick.setText(str(left))
