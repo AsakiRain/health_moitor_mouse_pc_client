@@ -407,14 +407,14 @@ class DatabaseHandler:
 
             #汇聚后的记录输出csv用于调试
             
-            debug_csv_path = "./tmp/aggregated_records_debug.csv"
-            with open(debug_csv_path, mode='w', newline='', encoding='utf-8') as csvfile:
-                fieldnames = ['created_at', 'heartrate', 'spo2', 'bk', 'fatigue', 'systolic', 'diastolic',
-                              'cardiac', 'resistance', 'rr_interval', 'sdnn', 'rmssd', 'nn50', 'pnn50']
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-                for record in aggregated_records:
-                    writer.writerow(record)
+            # debug_csv_path = "./tmp/aggregated_records_debug.csv"
+            # with open(debug_csv_path, mode='w', newline='', encoding='utf-8') as csvfile:
+            #     fieldnames = ['created_at', 'heartrate', 'spo2', 'bk', 'fatigue', 'systolic', 'diastolic',
+            #                   'cardiac', 'resistance', 'rr_interval', 'sdnn', 'rmssd', 'nn50', 'pnn50']
+            #     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            #     writer.writeheader()
+            #     for record in aggregated_records:
+            #         writer.writerow(record)
 
             
             print(f"数据汇聚完成：{len(rows)} 条原始记录 -> {len(aggregated_records)} 条汇聚记录（每 {interval_minutes} 分钟）")
