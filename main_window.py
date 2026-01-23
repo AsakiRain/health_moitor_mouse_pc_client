@@ -97,7 +97,7 @@ class MainWindow(QMainWindow):
         self.label_leftclick = self.findChild(QLabel, "label_leftclick")
         self.label_midclick = self.findChild(QLabel, "label_midclick")
         self.label_rightclick = self.findChild(QLabel, "label_rightclick")
-
+ 
         self.log_output = self.findChild(QTextEdit, "log_output")
         if self.log_output:
             self.log_output.setReadOnly(True)
@@ -371,17 +371,17 @@ class MainWindow(QMainWindow):
             # 使用处理器进行单位转换输出
             distance_m = None
             try:
-                distance_m = self.mouse_processor.pixels_to_meters_str(mouse['distance'])
+                distance_m = self.mouse_processor.distance_to_meters_str(mouse['distance'])
             except Exception:
                 distance_m = None
             if distance_m:
                 self._log_to_ui(
-                    f"从数据库加载鼠标数据 ({mouse['created_at']}): 距离={mouse['distance']}px (~{distance_m}), "
+                    f"从数据库加载鼠标数据 ({mouse['created_at']}): 距离={distance_m}, "
                     f"L={mouse['left_click']}, M={mouse['mid_click']}, R={mouse['right_click']}"
                 )
             else:
                 self._log_to_ui(
-                    f"从数据库加载鼠标数据 ({mouse['created_at']}): 距离={mouse['distance']}px, "
+                    f"从数据库加载鼠标数据 ({mouse['created_at']}): 距离={mouse['distance']}μm, "
                     f"L={mouse['left_click']}, M={mouse['mid_click']}, R={mouse['right_click']}"
                 )
             self._update_mouse_labels(mouse['distance'], mouse['left_click'], mouse['mid_click'], mouse['right_click'])
