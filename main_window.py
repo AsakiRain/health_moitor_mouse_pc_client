@@ -24,6 +24,8 @@ from utils import resource_path
 LOGGING_ENABLED = True
 COLLTIMES = 100  # 数据采集时间，单位秒
 ACK_TIMEOUT_MS = 3000  # ACK 超时时间，单位毫秒
+TIME_SYNC_INTERVAL = 10  # 默认时间同步间隔，单位分钟
+
 
 
 class MainWindow(QMainWindow):
@@ -192,11 +194,10 @@ class MainWindow(QMainWindow):
 
             # 立即发送一次时间同步
             QTimer.singleShot(50, self._on_time_sync)
-            # 启动定时时间同步
-            sync_interval = self.config_handler.get_time_sync_interval()
-            self.time_sync_timer.setInterval(sync_interval * 60 * 1000)  # 转换为毫秒
+            # 启动定时时间同步（使用全局变量配置）
+            self.time_sync_timer.setInterval(TIME_SYNC_INTERVAL * 60 * 1000)  # 转换为毫秒
             self.time_sync_timer.start()
-            self._log_to_ui(f"已启动时间同步定时器，间隔 {sync_interval} 分钟。")
+            self._log_to_ui(f"已启动时间同步定时器，间隔 {TIME_SYNC_INTERVAL} 分钟。")
             
             # 启动时发起一次数据同步
             QTimer.singleShot(100, self._startup_sync_data)
@@ -733,10 +734,16 @@ class MainWindow(QMainWindow):
         self.status_icon.mouseReleaseEvent = self._on_status_icon_clicked
 
     def _on_status_icon_clicked(self, event):
-        """处理状态图标点击事件"""
+        """处理状态图标点击事件：设备状态检测的同时，发送强制时间同步指令"""
         if self.status_label.text() == "已连接":
+            self._log_to_ui("手动发送强制时间同步指令...")
+            self.serial_worker.send_timestamp(force=True)
+            self.ack_timeout_timer.start()
+            
             self._log_to_ui("手动发送设备状态检测指令...")
             self._send_with_ack_check(const.CMD_DEVICE_STATUS_CHECK)
+            #ack_timeout_timer.start() 只需调用一次即可，因为 _send_with_ack_check 内部已经会启动这个定时器
+
         else:
             self._log_to_ui("设备未连接，无法发送指令。")
 

@@ -272,8 +272,13 @@ class SerialWorker(QObject):
         except serial.SerialException as e:
             self.error_occurred.emit(f"发送数据失败: {e}")
     
-    def send_timestamp(self):
-        """发送当前时间戳给设备用于时间校准（包含时区信息）"""
+    def send_timestamp(self, force: bool = False):
+        """发送当前时间戳给设备用于时间校准（包含时区信息）
+        
+        协议格式：
+        - 8字节 double 时间戳 + 4字节 int32 时区偏移（秒）
+        - 可选第13字节：force 标志（非0则强制更新）
+        """
         # 获取当前Unix时间戳（秒，双精度浮点）
         timestamp = time.time()
         
@@ -286,15 +291,19 @@ class SerialWorker(QObject):
         else:
             timezone_offset = -time.timezone
         
-        # 打包：8字节 timestamp + 4字节 timezone_offset（秒）
-        payload = struct.pack('<di', timestamp, timezone_offset)
+        # 打包：8字节 timestamp + 4字节 timezone_offset（秒） + 可选1字节 force 标志
+        if force:
+            payload = struct.pack('<diB', timestamp, timezone_offset, 1)
+        else:
+            payload = struct.pack('<di', timestamp, timezone_offset)
         
         # 格式化时区显示
         offset_hours = timezone_offset // 3600
         offset_minutes = abs(timezone_offset % 3600) // 60
         tz_str = f"UTC{offset_hours:+03d}:{offset_minutes:02d}"
         
-        self.log_message.emit(f"发送时间戳: {timestamp} ({time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))}) 时区: {tz_str}")
+        force_str = " [强制]" if force else ""
+        self.log_message.emit(f"发送时间戳{force_str}: {timestamp} ({time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))}) 时区: {tz_str}")
         self.send_frame(CMD_SYNC_TIME, payload)
 
     def run(self):
