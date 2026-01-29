@@ -16,6 +16,7 @@ config.conf
 /build/
 /.vscode/
 /.github/
+/backup/
 
 # PyInstaller 配置文件
 #*.spec
@@ -25,5 +26,3 @@ __pycache__/
 
 
 
-main.dist/main.dll
-/main.dist/

@@ -1,6 +1,5 @@
 [SERIAL]
 com = COM5
-time_sync_interval = 30
 
 [AI]
 platform = deepseek
