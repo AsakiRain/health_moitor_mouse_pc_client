@@ -38,7 +38,7 @@ class HealthRepository:
         """从列表保存健康数据（兼容旧接口）"""
         ts = full_data[-1]
         try:
-            created_at = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+            created_at = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S') if ts else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         except (OSError, ValueError):
             created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         

@@ -77,6 +77,9 @@ def init_database(db_file: str = DEFAULT_DB_FILE):
             )
         """)
         
+        # 迁移：补充 health_data 表中可能缺失的列
+        _migrate_health_data(cursor)
+
         conn.commit()
         conn.close()
         print(f"数据库 '{db_path}' 初始化成功。")
@@ -85,3 +88,28 @@ def init_database(db_file: str = DEFAULT_DB_FILE):
     except sqlite3.Error as e:
         print(f"数据库初始化失败: {e}")
         raise
+
+
+def _migrate_health_data(cursor: sqlite3.Cursor):
+    """为 health_data 表补充历史版本中缺失的列"""
+    # 获取当前列名
+    cursor.execute("PRAGMA table_info(health_data)")
+    existing = {row[1] for row in cursor.fetchall()}
+
+    # 需要确保存在的列：(列名, 类型, 默认值)
+    required_columns = [
+        ('acdata',      'BLOB',    'NULL'),
+        ('rsv1',        'INTEGER', '0'),
+        ('rsv2',        'INTEGER', '0'),
+        ('rra',         'BLOB',    'NULL'),
+        ('rsv3',        'INTEGER', '0'),
+        ('state',       'INTEGER', '0'),
+        ('timestamp',   'INTEGER', '0'),
+    ]
+
+    for col_name, col_type, default in required_columns:
+        if col_name not in existing:
+            cursor.execute(
+                f"ALTER TABLE health_data ADD COLUMN {col_name} {col_type} DEFAULT {default}"
+            )
+            print(f"数据库迁移: health_data 表新增列 '{col_name}'")

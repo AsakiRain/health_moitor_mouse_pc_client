@@ -123,7 +123,9 @@ class HealthRecord:
     
     @property
     def created_at(self) -> str:
-        """获取格式化的时间字符串"""
+        """获取格式化的时间字符串；设备无 RTC 时 timestamp 为 0，回退到 PC 当前时间"""
+        if not self.timestamp:
+            return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         try:
             return datetime.fromtimestamp(self.timestamp).strftime('%Y-%m-%d %H:%M:%S')
         except (OSError, ValueError):

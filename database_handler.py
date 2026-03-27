@@ -461,10 +461,10 @@ class DatabaseHandler:
                  rr_interval, sdnn, rmssd, nn50, pnn50,
                  rra, rsv3, state, timestamp]
         """
-        # 使用设备时间戳作为 created_at
+        # 使用设备时间戳作为 created_at；设备无 RTC 时 timestamp 为 0，回退到 PC 当前时间
         ts = full_data[-1]  # timestamp 是最后一个元素
         try:
-            created_at = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S')
+            created_at = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S') if ts else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         except (OSError, ValueError):
             created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
