@@ -11,7 +11,7 @@ import constants as const
 
 
 # 检测时长（秒）
-COLLTIMES = 100
+COLLTIMES = 40
 
 
 class HealthCheckMixin:
@@ -34,7 +34,7 @@ class HealthCheckMixin:
         # 检测超时定时器
         self.detection_timeout_timer = QTimer(self)
         self.detection_timeout_timer.setSingleShot(True)
-        self.detection_timeout_timer.setInterval(100 * 1000)  # 100秒超时
+        self.detection_timeout_timer.setInterval(COLLTIMES * 1000)
         self.detection_timeout_timer.timeout.connect(self.on_detection_timeout)
         
         # 倒计时定时器
