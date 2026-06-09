@@ -24,6 +24,7 @@ from database_handler import DatabaseHandler
 from device_log_window import DeviceLogWindow
 from history_window import HistoryWindow
 from mouse_handler import MouseDataProcessor
+from settings_window import MouseSettingsWindow
 from utils import resource_path
 import constants as const
 
@@ -64,6 +65,7 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
         self.mouse_processor = MouseDataProcessor(self.db_handler)
         self.history_window_instance = None
         self.device_log_window_instance = None
+        self.settings_window_instance = None
         self._health_check_records = []
         
         # === 初始化 Mixins ===
@@ -117,6 +119,10 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
         self.device_log_button = self.findChild(QPushButton, "btn_device_log")
         if self.device_log_button:
             self.device_log_button.clicked.connect(self.show_device_log_window)
+
+        self.settings_button = self.findChild(QPushButton, "btn_settings")
+        if self.settings_button:
+            self.settings_button.clicked.connect(self.show_settings_window)
         
         # 刷新鼠标数据按钮
         self.mousedata_button = self.findChild(QPushButton, "btn_mousedata")
@@ -566,6 +572,15 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             self.device_log_window_instance = DeviceLogWindow(self)
         self.device_log_window_instance.show()
         self.device_log_window_instance.activateWindow()
+
+    def show_settings_window(self):
+        """显示鼠标设置窗口"""
+        if self.settings_window_instance is None:
+            self.settings_window_instance = MouseSettingsWindow(self.serial_worker, self)
+        else:
+            self.settings_window_instance.request_settings()
+        self.settings_window_instance.show()
+        self.settings_window_instance.activateWindow()
     
     def send_sync_command(self, timestamp: int):
         """发送同步命令"""

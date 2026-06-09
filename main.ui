@@ -237,6 +237,22 @@
       </widget>
      </item>
      <item>
+      <widget class="QPushButton" name="btn_settings">
+       <property name="text">
+        <string>鼠标设置</string>
+       </property>
+       <property name="cursor">
+        <cursorShape>PointingHandCursor</cursorShape>
+       </property>
+       <property name="minimumSize">
+        <size>
+         <width>100</width>
+         <height>36</height>
+        </size>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QPushButton" name="btn_history">
        <property name="text">
         <string>查看历史数据</string>
