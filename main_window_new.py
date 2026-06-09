@@ -11,7 +11,8 @@ import struct
 from datetime import datetime
 
 from PySide6.QtWidgets import (
-    QMainWindow, QPushButton, QLabel, QTextEdit, QApplication, QMessageBox
+    QMainWindow, QPushButton, QLabel, QTextEdit, QApplication, QMessageBox,
+    QDialog, QVBoxLayout, QTextBrowser, QDialogButtonBox
 )
 from PySide6.QtCore import Qt, QTimer, QFile, QThread
 from PySide6.QtUiTools import QUiLoader
@@ -390,7 +391,7 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             if r['hr'] > 0 or r['spo2'] > 0 or r['systolic'] > 0 or r['diastolic'] > 0
         ]
         if not records:
-            QMessageBox.information(self, "体检报告", "本次体检没有收到健康数据。")
+            self._show_health_report_dialog("<h2>🩺 体检报告</h2><p>本次体检没有收到健康数据。</p>")
             return
 
         latest = valid_records[-1] if valid_records else records[-1]
@@ -399,23 +400,114 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             values = [r[key] for r in valid_records if r[key] > 0]
             return round(sum(values) / len(values)) if values else 0
 
-        lines = [
-            f"记录数: {len(records)} 条",
-            f"有效记录: {len(valid_records)} 条",
-            "",
-            f"最新心率: {latest['hr'] or '--'} bpm",
-            f"最新血氧: {latest['spo2'] or '--'} %",
-            f"最新血压: {latest['systolic'] or '--'}/{latest['diastolic'] or '--'} mmHg",
-            f"疲劳指数: {latest['fatigue'] or '--'}",
-            f"HRV(SDNN): {latest['sdnn'] or '--'}",
-            f"状态: 0x{latest['state']:02X}",
-            "",
-            f"平均心率: {avg('hr') or '--'} bpm",
-            f"平均血氧: {avg('spo2') or '--'} %",
-            f"平均收缩压: {avg('systolic') or '--'} mmHg",
-            f"平均舒张压: {avg('diastolic') or '--'} mmHg",
-        ]
-        QMessageBox.information(self, "体检报告", "\n".join(lines))
+        def display(value, suffix: str = "") -> str:
+            return f"{value}{suffix}" if value else "--"
+
+        def badge_html(state: int) -> str:
+            if state == 0x04:
+                return '<span class="badge warn">❔ 未检测到手指</span>'
+            if valid_records:
+                return '<span class="badge ok">✅ 已获取有效数据</span>'
+            return '<span class="badge bad">❌ 未获取有效指标</span>'
+
+        html = f"""
+        <html>
+        <head>
+        <style>
+            body {{
+                background: #1e1e2e;
+                color: #cdd6f4;
+                font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+            }}
+            h2 {{
+                color: #89b4fa;
+                margin: 0 0 10px 0;
+            }}
+            .meta {{
+                color: #a6adc8;
+                margin-bottom: 12px;
+                line-height: 1.7;
+            }}
+            .badge {{
+                display: inline-block;
+                padding: 4px 8px;
+                border-radius: 6px;
+                font-weight: 700;
+            }}
+            .ok {{ color: #a6e3a1; }}
+            .warn {{ color: #f9e2af; }}
+            .bad {{ color: #f38ba8; }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 10px;
+                font-size: 13px;
+            }}
+            th {{
+                color: #89b4fa;
+                text-align: left;
+                border-bottom: 1px solid #45475a;
+                padding: 7px 6px;
+            }}
+            td {{
+                border-bottom: 1px solid #313244;
+                padding: 7px 6px;
+            }}
+            td.value {{
+                color: #a6e3a1;
+                font-family: Consolas, Monaco, monospace;
+                font-weight: 700;
+                text-align: right;
+            }}
+            .section {{
+                color: #f5c2e7;
+                font-weight: 700;
+                padding-top: 12px;
+            }}
+        </style>
+        </head>
+        <body>
+            <h2>🩺 体检报告</h2>
+            <div class="meta">
+                {badge_html(latest['state'])}<br>
+                📦 有效记录: <b>{len(valid_records)}</b> 条　
+                🧭 状态: <b>0x{latest['state']:02X}</b>
+            </div>
+            <table>
+                <tr><th>项目</th><th>最新值</th><th>本次平均</th></tr>
+                <tr><td class="section" colspan="3">❤️ 心肺指标</td></tr>
+                <tr><td>心率 HR</td><td class="value">{display(latest['hr'], " bpm")}</td><td class="value">{display(avg('hr'), " bpm")}</td></tr>
+                <tr><td>血氧 SpO2</td><td class="value">{display(latest['spo2'], " %")}</td><td class="value">{display(avg('spo2'), " %")}</td></tr>
+                <tr><td>血压 BP</td><td class="value">{display(latest['systolic'])}/{display(latest['diastolic'])} mmHg</td><td class="value">{display(avg('systolic'))}/{display(avg('diastolic'))} mmHg</td></tr>
+                <tr><td class="section" colspan="3">📈 自主神经与疲劳</td></tr>
+                <tr><td>心率变异性(HRV)</td><td class="value">{display(latest['sdnn'])}</td><td class="value">{display(avg('sdnn'))}</td></tr>
+                <tr><td>心搏间期(RR)</td><td class="value">{display(latest['rr_interval'])}</td><td class="value">{display(avg('rr_interval'))}</td></tr>
+                <tr><td>疲劳指数</td><td class="value">{display(latest['fatigue'])}</td><td class="value">{display(avg('fatigue'))}</td></tr>
+                <tr><td class="section" colspan="3">🔬 波形质量</td></tr>
+                <tr><td>脉搏波幅度(AC)</td><td class="value">{latest['ac_min']}..{latest['ac_max']}</td><td class="value">--</td></tr>
+            </table>
+        </body>
+        </html>
+        """
+        self._show_health_report_dialog(html)
+
+    def _show_health_report_dialog(self, html: str):
+        """显示富文本体检报告。"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("体检报告")
+        dialog.resize(520, 560)
+
+        layout = QVBoxLayout(dialog)
+        browser = QTextBrowser(dialog)
+        browser.setOpenExternalLinks(False)
+        browser.setHtml(html)
+        layout.addWidget(browser)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok, dialog)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+
+        dialog.exec()
     
     def on_mouse_data_received(self, payload: bytes):
         """处理鼠标数据"""
