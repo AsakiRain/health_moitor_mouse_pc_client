@@ -20,6 +20,7 @@ from PySide6.QtUiTools import QUiLoader
 from serial_comm.worker import SerialWorker
 from config_handler import ConfigHandler
 from database_handler import DatabaseHandler
+from device_log_window import DeviceLogWindow
 from history_window import HistoryWindow
 from mouse_handler import MouseDataProcessor
 from utils import resource_path
@@ -61,6 +62,7 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
         self.db_handler = DatabaseHandler(metric_keys=self.metric_keys)
         self.mouse_processor = MouseDataProcessor(self.db_handler)
         self.history_window_instance = None
+        self.device_log_window_instance = None
         
         # === 初始化 Mixins ===
         self._init_tray()
@@ -109,6 +111,10 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
         self.history_button = self.findChild(QPushButton, "btn_history")
         if self.history_button:
             self.history_button.clicked.connect(self.show_history_window)
+
+        self.device_log_button = self.findChild(QPushButton, "btn_device_log")
+        if self.device_log_button:
+            self.device_log_button.clicked.connect(self.show_device_log_window)
         
         # 刷新鼠标数据按钮
         self.mousedata_button = self.findChild(QPushButton, "btn_mousedata")
@@ -198,6 +204,7 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
         self.serial_worker.ack_received.connect(self.on_ack_received)
         self.serial_worker.health_data_received.connect(self.on_health_data_received)
         self.serial_worker.mouse_data_received.connect(self.on_mouse_data_received)
+        self.serial_worker.device_log_received.connect(self.on_device_log_received)
         self.serial_worker.connected.connect(self._update_status_connected)
         self.serial_worker.disconnected.connect(self._update_status_disconnected)
         
@@ -365,6 +372,12 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             )
         except Exception as e:
             self._log_to_ui(f"解析鼠标数据失败: {e}")
+
+    def on_device_log_received(self, message: str):
+        """处理设备推送日志"""
+        if self.device_log_window_instance is None:
+            self.device_log_window_instance = DeviceLogWindow(self)
+        self.device_log_window_instance.append_log(message)
     
     def show_history_window(self):
         """显示历史数据窗口"""
@@ -389,6 +402,13 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
         
         self.history_window_instance.show()
         self.history_window_instance.activateWindow()
+
+    def show_device_log_window(self):
+        """显示设备日志窗口"""
+        if self.device_log_window_instance is None:
+            self.device_log_window_instance = DeviceLogWindow(self)
+        self.device_log_window_instance.show()
+        self.device_log_window_instance.activateWindow()
     
     def send_sync_command(self, timestamp: int):
         """发送同步命令"""

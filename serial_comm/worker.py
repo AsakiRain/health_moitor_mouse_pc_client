@@ -15,7 +15,7 @@ from core.protocol import crc16_xmodem, parse_frame, build_frame
 from constants import (
     PROTO_VER, CMD_ACK, CMD_NOTIFY_HEALTH_DATA_READY, CMD_GET_LAST_HEALTH_DATA,
     CMD_GET_MOUSE_DATA, CMD_PING, CMD_SYNC_TIME, ACK_SUCCESS,
-    CMD_SYNC_DATA_START, CMD_SYNC_DATA_BATCH, CMD_SYNC_DATA_END
+    CMD_SYNC_DATA_START, CMD_SYNC_DATA_BATCH, CMD_SYNC_DATA_END, CMD_DEVICE_LOG
 )
 
 
@@ -38,6 +38,7 @@ class SerialWorker(QObject):
     ack_received = Signal(int, int)       # (original_cmd, status_code)
     health_data_received = Signal(bytes)  # raw health data payload
     mouse_data_received = Signal(bytes)   # raw mouse data payload
+    device_log_received = Signal(str)     # decoded device log line
     
     # === 数据同步信号 ===
     sync_start = Signal(int)           # estimated_total
@@ -64,6 +65,7 @@ class SerialWorker(QObject):
             CMD_SYNC_DATA_START: self._handle_sync_start,
             CMD_SYNC_DATA_BATCH: self._handle_sync_batch,
             CMD_SYNC_DATA_END: self._handle_sync_end,
+            CMD_DEVICE_LOG: self._handle_device_log,
         }
 
     # ========================
@@ -368,7 +370,8 @@ class SerialWorker(QObject):
                 )
                 continue
             
-            self.log_message.emit(f"接收: CMD={hex(cmd)}, Payload={payload.hex(' ').upper()}")
+            if cmd != CMD_DEVICE_LOG:
+                self.log_message.emit(f"接收: CMD={hex(cmd)}, Payload={payload.hex(' ').upper()}")
             self._dispatch_command(cmd, payload)
 
     def _dispatch_command(self, cmd: int, payload: bytes):
@@ -395,6 +398,11 @@ class SerialWorker(QObject):
 
     def _handle_mouse_data(self, payload: bytes):
         self.mouse_data_received.emit(payload)
+
+    def _handle_device_log(self, payload: bytes):
+        message = payload.decode('utf-8', errors='replace').rstrip()
+        if message:
+            self.device_log_received.emit(message)
 
     def _handle_sync_start(self, payload: bytes):
         if len(payload) >= 4:
