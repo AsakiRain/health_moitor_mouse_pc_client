@@ -49,6 +49,8 @@ class HealthCheckMixin:
     def on_start_button_clicked(self):
         """处理开始按钮点击事件"""
         self._log_to_ui("点击了开始按钮...")
+        if hasattr(self, "_begin_health_check_report"):
+            self._begin_health_check_report()
         self._start_blinking()
         self.detection_timeout_timer.start()
         
@@ -114,6 +116,8 @@ class HealthCheckMixin:
         """倒计时结束后的处理"""
         if self.start_button and self.start_button.text() == "处理中...":
             self._log_to_ui("检测完成，重置状态。")
+            if hasattr(self, "_show_health_check_report"):
+                self._show_health_check_report()
             self._reset_detection_state()
     
     def _is_detection_in_progress(self) -> bool:

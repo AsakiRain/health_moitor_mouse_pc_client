@@ -15,7 +15,15 @@ class MouseRepository:
     def __init__(self, db_file: str = 'history.db'):
         self.db_path = get_db_path(db_file)
     
-    def save(self, distance: int, left_click: int, mid_click: int, right_click: int) -> bool:
+    def save(
+        self,
+        distance: int,
+        left_click: int,
+        mid_click: int,
+        right_click: int,
+        back_click: int = 0,
+        forward_click: int = 0
+    ) -> bool:
         """保存或更新鼠标数据（仅一行，id=1）"""
         now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
@@ -23,15 +31,20 @@ class MouseRepository:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO mouse_data (id, created_at, distance, left_click, mid_click, right_click)
-                VALUES (1, ?, ?, ?, ?, ?)
+                INSERT INTO mouse_data (
+                    id, created_at, distance, left_click, mid_click, right_click,
+                    back_click, forward_click
+                )
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     created_at=excluded.created_at,
                     distance=excluded.distance,
                     left_click=excluded.left_click,
                     mid_click=excluded.mid_click,
-                    right_click=excluded.right_click
-            """, [now, distance, left_click, mid_click, right_click])
+                    right_click=excluded.right_click,
+                    back_click=excluded.back_click,
+                    forward_click=excluded.forward_click
+            """, [now, distance, left_click, mid_click, right_click, back_click, forward_click])
             conn.commit()
             conn.close()
             print("鼠标数据已更新")
@@ -49,7 +62,7 @@ class MouseRepository:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT created_at, distance, left_click, mid_click, right_click
+                SELECT created_at, distance, left_click, mid_click, right_click, back_click, forward_click
                 FROM mouse_data WHERE id = 1
             """)
             row = cursor.fetchone()
@@ -62,6 +75,8 @@ class MouseRepository:
                     'left_click': row[2],
                     'mid_click': row[3],
                     'right_click': row[4],
+                    'back_click': row[5],
+                    'forward_click': row[6],
                 }
             return None
         except sqlite3.Error as e:

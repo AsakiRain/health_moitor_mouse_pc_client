@@ -42,7 +42,8 @@
     /* Value Labels Styling */
     QLabel#label_hr_value, QLabel#label_spo2_value, QLabel#label_mc_value, QLabel#label_fi_value,
     QLabel#label_sbp_value, QLabel#label_dbp_value, QLabel#label_co_value, QLabel#label_pr_value,
-    QLabel#label_distance, QLabel#label_leftclick, QLabel#label_rightclick, QLabel#label_midclick {
+    QLabel#label_distance, QLabel#label_leftclick, QLabel#label_rightclick, QLabel#label_midclick,
+    QLabel#label_backclick, QLabel#label_forwardclick {
         color: #a6e3a1;
         font-weight: bold;
         font-size: 16px;
@@ -159,6 +160,12 @@
 
       <item row="1" column="2"><widget class="QLabel" name="label_5"><property name="text"><string>右键点击</string></property></widget></item>
       <item row="1" column="3"><widget class="QLabel" name="label_rightclick"><property name="text"><string>0</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
+
+      <item row="2" column="0"><widget class="QLabel" name="label_backclick_title"><property name="text"><string>后退点击</string></property></widget></item>
+      <item row="2" column="1"><widget class="QLabel" name="label_backclick"><property name="text"><string>0</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
+
+      <item row="2" column="2"><widget class="QLabel" name="label_forwardclick_title"><property name="text"><string>前进点击</string></property></widget></item>
+      <item row="2" column="3"><widget class="QLabel" name="label_forwardclick"><property name="text"><string>0</string></property><property name="alignment"><set>Qt::AlignRight|Qt::AlignVCenter</set></property></widget></item>
      </layout>
     </widget>
    </item>

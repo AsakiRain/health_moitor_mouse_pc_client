@@ -11,6 +11,8 @@ class MouseDataProcessor:
     - leftClickCount: uint32_t (4字节) - 左键点击次数
     - rightClickCount: uint32_t (4字节) - 右键点击次数
     - middleClickCount: uint32_t (4字节) - 中键点击次数
+    - backClickCount: uint32_t (4字节) - 后退侧键点击次数
+    - forwardClickCount: uint32_t (4字节) - 前进侧键点击次数
     - sessionTime: uint32_t (4字节) - 会话时间（秒）
     - lastSaveTime: uint32_t (4字节) - 上次保存时间戳
     """
@@ -21,7 +23,7 @@ class MouseDataProcessor:
     def parse_payload(self, payload: bytes) -> dict:
         """
         解析设备发送的鼠标统计数据。
-        格式: <QIIIII> (28字节)
+        格式: <QIIIIIII> (36字节)
         - Q: totalDistance (uint64_t, 微米)
         - I: leftClickCount (uint32_t)
         - I: rightClickCount (uint32_t)
@@ -29,12 +31,12 @@ class MouseDataProcessor:
         - I: sessionTime (uint32_t, 秒)
         - I: lastSaveTime (uint32_t, 时间戳)
         """
-        expected_len = 28  # 8 + 4*5
-        if len(payload) < expected_len:
+        expected_len = 36
+        if len(payload) != expected_len:
             raise ValueError(f"鼠标数据 payload 长度不正确: {len(payload)}，期望 {expected_len} 字节")
         
-        total_distance_um, left, right, mid, session_time, last_save_time = struct.unpack(
-            '<QIIIII', payload[:expected_len]
+        total_distance_um, left, right, mid, back, forward, session_time, last_save_time = struct.unpack(
+            '<QIIIIIII', payload
         )
         
         return {
@@ -42,6 +44,8 @@ class MouseDataProcessor:
             'left_click': int(left),
             'right_click': int(right),
             'mid_click': int(mid),
+            'back_click': int(back),
+            'forward_click': int(forward),
             'session_time': int(session_time),  # 秒
             'last_save_time': int(last_save_time),  # 时间戳
         }
@@ -76,7 +80,9 @@ class MouseDataProcessor:
             data['total_distance_um'],
             data['left_click'],
             data['mid_click'],
-            data['right_click']
+            data['right_click'],
+            data['back_click'],
+            data['forward_click']
         )
         
         return {
@@ -84,6 +90,8 @@ class MouseDataProcessor:
             'left_click': data['left_click'],
             'mid_click': data['mid_click'],
             'right_click': data['right_click'],
+            'back_click': data['back_click'],
+            'forward_click': data['forward_click'],
             'session_time': data['session_time'],
             'last_save_time': data['last_save_time'],
             'distance_m_str': self.distance_to_meters_str(data['total_distance_um']),

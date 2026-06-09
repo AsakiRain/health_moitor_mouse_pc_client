@@ -54,10 +54,13 @@ class DatabaseHandler:
                 distance INTEGER NOT NULL DEFAULT 0,
                 left_click INTEGER NOT NULL DEFAULT 0,
                 mid_click INTEGER NOT NULL DEFAULT 0,
-                right_click INTEGER NOT NULL DEFAULT 0
+                right_click INTEGER NOT NULL DEFAULT 0,
+                back_click INTEGER NOT NULL DEFAULT 0,
+                forward_click INTEGER NOT NULL DEFAULT 0
             );
             """
             cursor.execute(create_mouse_sql)
+            self._migrate_mouse_data(cursor)
             
             # 报告数据表
             create_reports_sql = """
@@ -485,7 +488,23 @@ class DatabaseHandler:
             return False
 
     # --- 鼠标数据相关 ---
-    def save_or_update_mouse_data(self, distance: int, left_click: int, mid_click: int, right_click: int) -> None:
+    def _migrate_mouse_data(self, cursor: sqlite3.Cursor) -> None:
+        """为历史 mouse_data 表补充新增的侧键统计列。"""
+        cursor.execute("PRAGMA table_info(mouse_data)")
+        existing = {row[1] for row in cursor.fetchall()}
+        for column in ("back_click", "forward_click"):
+            if column not in existing:
+                cursor.execute(f"ALTER TABLE mouse_data ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
+
+    def save_or_update_mouse_data(
+        self,
+        distance: int,
+        left_click: int,
+        mid_click: int,
+        right_click: int,
+        back_click: int = 0,
+        forward_click: int = 0
+    ) -> None:
         """
         保存或更新鼠标累计数据（设备侧为累计值，这里只需同步最新值）。
         表设计为仅一行（id=1）。
@@ -496,22 +515,41 @@ class DatabaseHandler:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                INSERT INTO mouse_data (id, created_at, distance, left_click, mid_click, right_click)
-                VALUES (1, ?, ?, ?, ?, ?)
+                INSERT INTO mouse_data (
+                    id, created_at, distance, left_click, mid_click, right_click,
+                    back_click, forward_click
+                )
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     created_at=excluded.created_at,
                     distance=excluded.distance,
                     left_click=excluded.left_click,
                     mid_click=excluded.mid_click,
-                    right_click=excluded.right_click
+                    right_click=excluded.right_click,
+                    back_click=excluded.back_click,
+                    forward_click=excluded.forward_click
                 """,
-                [now, distance, left_click, mid_click, right_click]
+                [now, distance, left_click, mid_click, right_click, back_click, forward_click]
             )
             conn.commit()
             conn.close()
             print("鼠标累计数据已更新到数据库。")
         except sqlite3.Error as e:
             print(f"保存鼠标数据失败: {e}")
+
+    def save_mouse_data(
+        self,
+        distance: int,
+        left_click: int,
+        mid_click: int,
+        right_click: int,
+        back_click: int = 0,
+        forward_click: int = 0
+    ) -> None:
+        """兼容模块化 MouseDataProcessor 的保存接口。"""
+        self.save_or_update_mouse_data(
+            distance, left_click, mid_click, right_click, back_click, forward_click
+        )
 
     def load_mouse_data(self) -> dict | None:
         """读取并返回保存的鼠标累计数据（单行）。"""
@@ -523,20 +561,22 @@ class DatabaseHandler:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT created_at, distance, left_click, mid_click, right_click
+                SELECT created_at, distance, left_click, mid_click, right_click, back_click, forward_click
                 FROM mouse_data WHERE id = 1
                 """
             )
             row = cursor.fetchone()
             conn.close()
             if row:
-                created_at, distance, left_click, mid_click, right_click = row
+                created_at, distance, left_click, mid_click, right_click, back_click, forward_click = row
                 return {
                     'created_at': created_at,
                     'distance': distance,
                     'left_click': left_click,
                     'mid_click': mid_click,
                     'right_click': right_click,
+                    'back_click': back_click,
+                    'forward_click': forward_click,
                 }
             return None
         except sqlite3.Error as e:

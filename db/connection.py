@@ -63,7 +63,9 @@ def init_database(db_file: str = DEFAULT_DB_FILE):
                 distance INTEGER NOT NULL DEFAULT 0,
                 left_click INTEGER NOT NULL DEFAULT 0,
                 mid_click INTEGER NOT NULL DEFAULT 0,
-                right_click INTEGER NOT NULL DEFAULT 0
+                right_click INTEGER NOT NULL DEFAULT 0,
+                back_click INTEGER NOT NULL DEFAULT 0,
+                forward_click INTEGER NOT NULL DEFAULT 0
             )
         """)
         
@@ -79,6 +81,7 @@ def init_database(db_file: str = DEFAULT_DB_FILE):
         
         # 迁移：补充 health_data 表中可能缺失的列
         _migrate_health_data(cursor)
+        _migrate_mouse_data(cursor)
 
         conn.commit()
         conn.close()
@@ -113,3 +116,16 @@ def _migrate_health_data(cursor: sqlite3.Cursor):
                 f"ALTER TABLE health_data ADD COLUMN {col_name} {col_type} DEFAULT {default}"
             )
             print(f"数据库迁移: health_data 表新增列 '{col_name}'")
+
+
+def _migrate_mouse_data(cursor: sqlite3.Cursor):
+    """为 mouse_data 表补充历史版本中缺失的侧键统计列"""
+    cursor.execute("PRAGMA table_info(mouse_data)")
+    existing = {row[1] for row in cursor.fetchall()}
+
+    for col_name in ("back_click", "forward_click"):
+        if col_name not in existing:
+            cursor.execute(
+                f"ALTER TABLE mouse_data ADD COLUMN {col_name} INTEGER NOT NULL DEFAULT 0"
+            )
+            print(f"数据库迁移: mouse_data 表新增列 '{col_name}'")

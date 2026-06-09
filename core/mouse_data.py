@@ -14,19 +14,21 @@ class MouseStatistics:
     mid_click: int
     session_time: int       # 会话时间（秒）
     last_save_time: int     # 上次保存时间戳
+    back_click: int = 0
+    forward_click: int = 0
     
     @classmethod
     def from_bytes(cls, payload: bytes) -> 'MouseStatistics':
         """
         从设备发送的 payload 解析鼠标统计数据
-        格式: <QIIIII> (28字节)
+        格式: <QIIIIIII> (36字节)
         """
-        expected_len = 28
-        if len(payload) < expected_len:
+        expected_len = 36
+        if len(payload) != expected_len:
             raise ValueError(f"鼠标数据长度不正确: {len(payload)}, 期望 {expected_len}")
         
-        total_distance_um, left, right, mid, session_time, last_save_time = struct.unpack(
-            '<QIIIII', payload[:expected_len]
+        total_distance_um, left, right, mid, back, forward, session_time, last_save_time = struct.unpack(
+            '<QIIIIIII', payload
         )
         
         return cls(
@@ -34,6 +36,8 @@ class MouseStatistics:
             left_click=int(left),
             right_click=int(right),
             mid_click=int(mid),
+            back_click=int(back),
+            forward_click=int(forward),
             session_time=int(session_time),
             last_save_time=int(last_save_time)
         )
@@ -87,7 +91,9 @@ class MouseDataProcessor:
                 stats.total_distance_um,
                 stats.left_click,
                 stats.mid_click,
-                stats.right_click
+                stats.right_click,
+                stats.back_click,
+                stats.forward_click
             )
         
         return {
@@ -95,6 +101,8 @@ class MouseDataProcessor:
             'left_click': stats.left_click,
             'mid_click': stats.mid_click,
             'right_click': stats.right_click,
+            'back_click': stats.back_click,
+            'forward_click': stats.forward_click,
             'session_time': stats.session_time,
             'last_save_time': stats.last_save_time,
             'distance_m_str': stats.distance_str,

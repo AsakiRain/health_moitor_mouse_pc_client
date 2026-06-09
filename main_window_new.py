@@ -11,7 +11,7 @@ import struct
 from datetime import datetime
 
 from PySide6.QtWidgets import (
-    QMainWindow, QPushButton, QLabel, QTextEdit, QApplication
+    QMainWindow, QPushButton, QLabel, QTextEdit, QApplication, QMessageBox
 )
 from PySide6.QtCore import Qt, QTimer, QFile, QThread
 from PySide6.QtUiTools import QUiLoader
@@ -63,6 +63,7 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
         self.mouse_processor = MouseDataProcessor(self.db_handler)
         self.history_window_instance = None
         self.device_log_window_instance = None
+        self._health_check_records = []
         
         # === 初始化 Mixins ===
         self._init_tray()
@@ -142,6 +143,8 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
         self.label_leftclick = self.findChild(QLabel, "label_leftclick")
         self.label_midclick = self.findChild(QLabel, "label_midclick")
         self.label_rightclick = self.findChild(QLabel, "label_rightclick")
+        self.label_backclick = self.findChild(QLabel, "label_backclick")
+        self.label_forwardclick = self.findChild(QLabel, "label_forwardclick")
         
         # 日志输出
         self.log_output = self.findChild(QTextEdit, "log_output")
@@ -270,11 +273,13 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             self._log_to_ui(
                 f"从数据库加载鼠标数据 ({mouse['created_at']}): "
                 f"距离={distance_m or str(mouse['distance'])+'μm'}, "
-                f"L={mouse['left_click']}, M={mouse['mid_click']}, R={mouse['right_click']}"
+                f"L={mouse['left_click']}, M={mouse['mid_click']}, R={mouse['right_click']}, "
+                f"Back={mouse.get('back_click', 0)}, Fwd={mouse.get('forward_click', 0)}"
             )
             self._update_mouse_labels(
                 mouse['distance'], mouse['left_click'],
-                mouse['mid_click'], mouse['right_click']
+                mouse['mid_click'], mouse['right_click'],
+                mouse.get('back_click', 0), mouse.get('forward_click', 0)
             )
         else:
             self._log_to_ui("数据库中无鼠标数据。")
@@ -318,8 +323,6 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
     
     def on_health_data_received(self, data: bytes):
         """处理健康数据"""
-        self._log_to_ui(f"收到健康数据: {data.hex(' ').upper()}")
-        
         if len(data) != 91:
             self._log_to_ui(f"警告: 健康数据长度不正确 (应为 91, 收到 {len(data)})")
             return
@@ -334,6 +337,24 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             
             hr, spo2, bk, fatigue, rsv1, rsv2, systolic, diastolic, cardiac, \
             resistance, rr_interval, sdnn, rmssd, nn50, pnn50 = struct.unpack('<15B', metrics)
+            ac_min = min(acdata) - 256 if acdata and min(acdata) > 127 else min((b if b < 128 else b - 256) for b in acdata)
+            ac_max = max((b if b < 128 else b - 256) for b in acdata)
+            record_summary = {
+                'hr': hr, 'spo2': spo2, 'bk': bk, 'fatigue': fatigue,
+                'systolic': systolic, 'diastolic': diastolic,
+                'cardiac': cardiac, 'resistance': resistance,
+                'rr_interval': rr_interval, 'sdnn': sdnn, 'rmssd': rmssd,
+                'nn50': nn50, 'pnn50': pnn50, 'state': state, 'timestamp': ts,
+                'ac_min': ac_min, 'ac_max': ac_max,
+            }
+            self._log_to_ui(
+                "健康数据: "
+                f"HR={hr} SpO2={spo2} BP={systolic}/{diastolic} "
+                f"疲劳={fatigue} HRV={sdnn} RR={rr_interval} "
+                f"state=0x{state:02X} AC={ac_min}..{ac_max}"
+            )
+            if getattr(self, "_health_check_collecting", False):
+                self._health_check_records.append(record_summary)
             
             full_data = [
                 acdata, hr, spo2, bk, fatigue, rsv1, rsv2,
@@ -354,6 +375,47 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
                 
         except struct.error as e:
             self._log_to_ui(f"解析健康数据失败: {e}")
+
+    def _begin_health_check_report(self):
+        """开始收集本次体检报告数据。"""
+        self._health_check_collecting = True
+        self._health_check_records = []
+
+    def _show_health_check_report(self):
+        """体检完成后弹出本次结果摘要。"""
+        self._health_check_collecting = False
+        records = list(getattr(self, "_health_check_records", []))
+        valid_records = [
+            r for r in records
+            if r['hr'] > 0 or r['spo2'] > 0 or r['systolic'] > 0 or r['diastolic'] > 0
+        ]
+        if not records:
+            QMessageBox.information(self, "体检报告", "本次体检没有收到健康数据。")
+            return
+
+        latest = valid_records[-1] if valid_records else records[-1]
+
+        def avg(key: str) -> int:
+            values = [r[key] for r in valid_records if r[key] > 0]
+            return round(sum(values) / len(values)) if values else 0
+
+        lines = [
+            f"记录数: {len(records)} 条",
+            f"有效记录: {len(valid_records)} 条",
+            "",
+            f"最新心率: {latest['hr'] or '--'} bpm",
+            f"最新血氧: {latest['spo2'] or '--'} %",
+            f"最新血压: {latest['systolic'] or '--'}/{latest['diastolic'] or '--'} mmHg",
+            f"疲劳指数: {latest['fatigue'] or '--'}",
+            f"HRV(SDNN): {latest['sdnn'] or '--'}",
+            f"状态: 0x{latest['state']:02X}",
+            "",
+            f"平均心率: {avg('hr') or '--'} bpm",
+            f"平均血氧: {avg('spo2') or '--'} %",
+            f"平均收缩压: {avg('systolic') or '--'} mmHg",
+            f"平均舒张压: {avg('diastolic') or '--'} mmHg",
+        ]
+        QMessageBox.information(self, "体检报告", "\n".join(lines))
     
     def on_mouse_data_received(self, payload: bytes):
         """处理鼠标数据"""
@@ -362,13 +424,16 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             self._log_to_ui(
                 f"收到鼠标数据: 距离={result['distance_m_str']}, "
                 f"L={result['left_click']}, M={result['mid_click']}, R={result['right_click']}, "
+                f"Back={result.get('back_click', 0)}, Fwd={result.get('forward_click', 0)}, "
                 f"会话时间={result['session_time_str']}"
             )
             self._update_mouse_labels(
                 result['distance_um'],
                 result['left_click'],
                 result['mid_click'],
-                result['right_click']
+                result['right_click'],
+                result.get('back_click', 0),
+                result.get('forward_click', 0)
             )
         except Exception as e:
             self._log_to_ui(f"解析鼠标数据失败: {e}")
@@ -433,7 +498,15 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
                 self.value_labels[key].setText(str(display_value))
         self._log_to_ui("界面数据已更新。")
     
-    def _update_mouse_labels(self, distance_um: int, left: int, mid: int, right: int):
+    def _update_mouse_labels(
+        self,
+        distance_um: int,
+        left: int,
+        mid: int,
+        right: int,
+        back: int = 0,
+        forward: int = 0
+    ):
         """更新鼠标数据标签"""
         if self.label_distance:
             try:
@@ -448,6 +521,10 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             self.label_midclick.setText(str(mid))
         if self.label_rightclick:
             self.label_rightclick.setText(str(right))
+        if self.label_backclick:
+            self.label_backclick.setText(str(back))
+        if self.label_forwardclick:
+            self.label_forwardclick.setText(str(forward))
         
         self._log_to_ui("鼠标数据已更新到界面。")
     
