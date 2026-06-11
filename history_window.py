@@ -128,10 +128,14 @@ class HistoryWindow(QDialog):
         self.ai_analysis_button = QPushButton("AI 分析")
         self.ai_analysis_button.clicked.connect(self.open_report_window)
 
+        self.sync_summary_label = QLabel()
+        self.sync_summary_label.setStyleSheet("color: #a6adc8;")
+
         functions_layout = QHBoxLayout()
         functions_layout.addWidget(self.sync_button)
         functions_layout.addWidget(self.extra_button)
         functions_layout.addWidget(self.ai_analysis_button)
+        functions_layout.addWidget(self.sync_summary_label)
         functions_layout.addStretch()
 
 
@@ -161,6 +165,30 @@ class HistoryWindow(QDialog):
         main_layout.addLayout(bottom_layout)
 
         self.setLayout(main_layout)
+        self._update_sync_summary()
+
+    def _update_sync_summary(self):
+        """更新历史数据同步摘要。"""
+        total = 0
+        latest_text = "--"
+        total_query = QSqlQuery("SELECT COUNT(*) FROM health_data", self.db)
+        if total_query.exec() and total_query.next():
+            total = int(total_query.value(0) or 0)
+
+        latest_query = QSqlQuery("""
+            SELECT timestamp, created_at
+            FROM health_data
+            ORDER BY record_id DESC, id DESC
+            LIMIT 1
+        """, self.db)
+        if latest_query.exec() and latest_query.next():
+            ts = int(latest_query.value(0) or 0)
+            if ts:
+                latest_text = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                latest_text = str(latest_query.value(1) or "--")
+
+        self.sync_summary_label.setText(f"上次同步: {latest_text}    总记录: {total}")
 
     def _show_context_menu(self, pos):
         """显示右键菜单"""
@@ -207,6 +235,7 @@ class HistoryWindow(QDialog):
                 self._go_to_page(self.current_page - 1)
             else:
                 self._go_to_page(self.current_page) # 留在当前页刷新
+            self._update_sync_summary()
         else:
             print(f"删除失败: {query.lastError().text()}")
 
@@ -286,17 +315,12 @@ class HistoryWindow(QDialog):
 
     def sync_data(self):
         """将设备上的历史数据同步到本地数据库"""
-        # 1. 查找本地最后一条数据的 timestamp
-        last_ts = 0
-        query = QSqlQuery("SELECT MAX(created_at) FROM health_data", self.db)
+        # 1. 查找本地已保存的最大 record_id
+        last_record_id = 0
+        query = QSqlQuery("SELECT COALESCE(MAX(record_id), 0) FROM health_data", self.db)
         if query.exec() and query.next():
             val = query.value(0)
-            if val:
-                try:
-                    dt = datetime.strptime(val, "%Y-%m-%d %H:%M:%S")
-                    last_ts = int(dt.timestamp())
-                except Exception:
-                    pass
+            last_record_id = int(val or 0)
         
         # 2. 显示进度条
         self.progress_dialog = QProgressDialog("正在请求同步...", "取消", 0, 100, self)
@@ -310,9 +334,10 @@ class HistoryWindow(QDialog):
         
         self.sync_received_count = 0
         self.sync_total = 0
+        self.sync_max_record_id = 0
 
         # 3. 发送请求信号
-        self.request_sync.emit(last_ts)
+        self.request_sync.emit(last_record_id)
 
     def _cancel_sync(self):
         self.sync_received_count = 0
@@ -341,7 +366,7 @@ class HistoryWindow(QDialog):
             return
 
         # HealthDataRecord 结构体大小 (pragma pack(1), 无填充)：
-        # HealthData (87 bytes) + timestamp (4 bytes) = 91 bytes
+        # HealthData (87 bytes) + timestamp (4 bytes) + record_id (4 bytes) = 95 bytes
         # HealthData 布局:
         #   [0-63]   acdata[64]    - 64 bytes (int8_t[], 心律波形)
         #   [64]     heartrate     - 1 byte
@@ -363,7 +388,8 @@ class HistoryWindow(QDialog):
         #   [85]     rsv3          - 1 byte (协议保留)
         #   [86]     state         - 1 byte (模块状态)
         # [87-90]  timestamp       - 4 bytes (uint32_t)
-        record_size = 91
+        # [91-94]  record_id       - 4 bytes (uint32_t)
+        record_size = 95
         
         if len(data) % record_size != 0:
             print(f"Warning: Batch data length {len(data)} is not multiple of {record_size}")
@@ -372,29 +398,32 @@ class HistoryWindow(QDialog):
         
         query = QSqlQuery(self.db)
         query.prepare("""
-            INSERT INTO health_data (
+            INSERT OR IGNORE INTO health_data (
                 created_at, acdata, heartrate, spo2, bk, fatigue,
                 rsv1, rsv2, systolic, diastolic, cardiac, resistance,
-                rr_interval, sdnn, rmssd, nn50, pnn50, rra, rsv3, state, timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                rr_interval, sdnn, rmssd, nn50, pnn50, rra, rsv3, state, timestamp, record_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """)
         
         for i in range(num_records):
             chunk = data[i*record_size : (i+1)*record_size]
             try:
-                # 完整解析 HealthDataRecord 结构体 (91 bytes, pragma pack(1))
+                # 完整解析 HealthDataRecord 结构体 (95 bytes, pragma pack(1))
                 acdata = chunk[0:64]         # 64 bytes 波形数据
                 metrics = chunk[64:79]       # 15 bytes: hr, spo2, bk, fatigue, rsv1, rsv2, sys, dia, cardiac, resistance, rr, sdnn, rmssd, nn50, pnn50
                 rra = chunk[79:85]           # 6 bytes RR间期数组
                 rsv3 = chunk[85]             # 1 byte
                 state = chunk[86]            # 1 byte
                 ts = struct.unpack('<I', chunk[87:91])[0]  # 4 bytes timestamp
+                record_id = struct.unpack('<I', chunk[91:95])[0]  # 4 bytes record_id
+                if record_id > getattr(self, 'sync_max_record_id', 0):
+                    self.sync_max_record_id = record_id
                 
                 # 解析 15 个单字节指标
                 hr, spo2, bk, fatigue, rsv1, rsv2, systolic, diastolic, cardiac, \
                 resistance, rr_interval, sdnn, rmssd, nn50, pnn50 = struct.unpack('<15B', metrics)
                 
-                ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+                ts_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
                 # 绑定所有参数
                 query.addBindValue(ts_str)          # created_at
@@ -418,16 +447,17 @@ class HistoryWindow(QDialog):
                 query.addBindValue(rsv3)
                 query.addBindValue(state)
                 query.addBindValue(ts)              # timestamp (原始值)
+                query.addBindValue(record_id)       # record_id (设备端单调ID)
                 
                 if not query.exec():
                    print(f"Insert error: {query.lastError().text()}")
-                
-                self.sync_received_count += 1
+                elif query.numRowsAffected() > 0:
+                    self.sync_received_count += 1
             except struct.error as e:
                 print(f"Error unpacking record in batch: {e}")
         
-        self.progress_dialog.setValue(self.sync_received_count)
-        self.progress_dialog.setLabelText(f"已同步 {self.sync_received_count}/{self.sync_total}...")
+        self.progress_dialog.setValue(min(sent_count, self.sync_total))
+        self.progress_dialog.setLabelText(f"已接收 {sent_count}/{self.sync_total}，写入 {self.sync_received_count} 条...")
 
     def on_sync_end(self, total, flag):
         # 检查数据库是否仍然打开
@@ -447,11 +477,12 @@ class HistoryWindow(QDialog):
         self._get_total_rows()
         self.total_pages = math.ceil(self.total_rows / self.page_size) if self.page_size > 0 else 0
         self._go_to_page(1)
+        self._update_sync_summary()
         
         # 防止重复弹窗，检查是否已取消
         if hasattr(self, 'progress_dialog') and self.progress_dialog and not self.progress_dialog.wasCanceled():
              QMessageBox.information(self, "同步完成", 
-                f"同步结束。\n服务端总数: {total}\n接收条数: {self.sync_received_count}")
+                f"同步结束。\n服务端总数: {total}\n写入条数: {self.sync_received_count}\n最大 Record ID: {self.sync_max_record_id}")
 
     def export_data(self):
         """导出所有历史数据到 CSV 文件"""
@@ -459,8 +490,8 @@ class HistoryWindow(QDialog):
             QMessageBox.information(self, "提示", "暂无数据可导出")
             return
         
-        # 生成默认文件名：CyMouse_数据_日期时间.csv
-        default_filename = f"CyMouse_健康数据_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        # 生成默认文件名：健康监控鼠标_数据_日期时间.csv
+        default_filename = f"健康监控鼠标_健康数据_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
         # 让用户选择保存位置
         file_path, _ = QFileDialog.getSaveFileName(

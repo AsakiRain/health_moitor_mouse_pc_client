@@ -164,4 +164,4 @@
 
 
 
-pyinstaller --name CyMouseMonitor --onefile --windowed --add-data "main.ui;." --add-data "config.conf;." --icon "icon.ico"  main.py
+pyinstaller --name 健康监控鼠标 --onefile --windowed --add-data "main.ui;." --add-data "config.conf;." --icon "icon.ico"  main.py

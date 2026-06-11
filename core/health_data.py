@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 
-# 健康数据记录大小 (91 bytes)
-HEALTH_RECORD_SIZE = 91
+# 健康数据记录大小：原始健康数据 91 bytes + record_id 4 bytes
+HEALTH_RECORD_SIZE = 95
 
 # 健康数据字段名列表（与设备端一致）
 METRIC_KEYS = [
@@ -20,7 +20,8 @@ METRIC_KEYS = [
     'rr_interval', 'sdnn', 'rmssd', 'nn50', 'pnn50',
     'rra',          # 最近RR间期 6字节 BLOB
     'rsv3', 'state',
-    'timestamp'     # 设备端时间戳
+    'timestamp',    # 设备端时间戳
+    'record_id'     # 设备端单调自增记录 ID
 ]
 
 
@@ -47,10 +48,11 @@ class HealthRecord:
     rsv3: int               # 协议保留
     state: int              # 模块状态
     timestamp: int          # Unix 时间戳
+    record_id: int          # 设备端单调自增记录 ID
     
     @classmethod
     def from_bytes(cls, data: bytes) -> 'HealthRecord':
-        """从 91 字节数据解析 HealthRecord"""
+        """从 95 字节数据解析 HealthRecord"""
         if len(data) != HEALTH_RECORD_SIZE:
             raise ValueError(f"数据长度错误: 期望 {HEALTH_RECORD_SIZE}, 实际 {len(data)}")
         
@@ -60,6 +62,7 @@ class HealthRecord:
         rsv3 = data[85]
         state = data[86]
         timestamp = struct.unpack('<I', data[87:91])[0]
+        record_id = struct.unpack('<I', data[91:95])[0]
         
         hr, spo2, bk, fatigue, rsv1, rsv2, systolic, diastolic, cardiac, \
         resistance, rr_interval, sdnn, rmssd, nn50, pnn50 = struct.unpack('<15B', metrics)
@@ -84,7 +87,8 @@ class HealthRecord:
             rra=rra,
             rsv3=rsv3,
             state=state,
-            timestamp=timestamp
+            timestamp=timestamp,
+            record_id=record_id
         )
     
     def to_list(self) -> list:
@@ -93,7 +97,8 @@ class HealthRecord:
             self.acdata, self.heartrate, self.spo2, self.bk, self.fatigue,
             self.rsv1, self.rsv2, self.systolic, self.diastolic, self.cardiac,
             self.resistance, self.rr_interval, self.sdnn, self.rmssd,
-            self.nn50, self.pnn50, self.rra, self.rsv3, self.state, self.timestamp
+            self.nn50, self.pnn50, self.rra, self.rsv3, self.state, self.timestamp,
+            self.record_id
         ]
     
     def to_dict(self) -> dict:
@@ -118,7 +123,8 @@ class HealthRecord:
             'rra': self.rra,
             'rsv3': self.rsv3,
             'state': self.state,
-            'timestamp': self.timestamp
+            'timestamp': self.timestamp,
+            'record_id': self.record_id
         }
     
     @property

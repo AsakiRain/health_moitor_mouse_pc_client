@@ -1,5 +1,5 @@
 """
-CyMouse Monitor 主窗口
+健康监控鼠标 Monitor 主窗口
 
 使用 Mixin 模式组织功能模块：
 - TrayMixin: 系统托盘
@@ -101,7 +101,7 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             'rr_interval', 'sdnn', 'rmssd', 'nn50', 'pnn50',
             'rra',          # 6字节 BLOB
             'rsv3', 'state',
-            'timestamp'
+            'timestamp', 'record_id'
         ]
     
     def _bind_ui_controls(self):
@@ -217,6 +217,8 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
         self.serial_worker.device_log_received.connect(self.on_device_log_received)
         self.serial_worker.connected.connect(self._update_status_connected)
         self.serial_worker.disconnected.connect(self._update_status_disconnected)
+        self.serial_worker.connected.connect(self._on_serial_connected)
+        self.serial_worker.disconnected.connect(self._on_serial_disconnected)
         
         self.serial_thread.started.connect(self.serial_worker.run)
     
@@ -240,9 +242,6 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             self.time_sync_timer.setInterval(TIME_SYNC_INTERVAL * 60 * 1000)
             self.time_sync_timer.start()
             self._log_to_ui(f"已启动时间同步定时器，间隔 {TIME_SYNC_INTERVAL} 分钟。")
-            
-            # 数据同步
-            QTimer.singleShot(100, self._startup_sync_data)
             
             # 获取鼠标数据
             QTimer.singleShot(150, lambda: self._send_with_ack_check(const.CMD_GET_MOUSE_DATA))
@@ -315,7 +314,7 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
         
         if original_cmd == const.CMD_START_HEALTH_CHECK:
             if status_code == const.ACK_SUCCESS:
-                self._log_to_ui("设备已确认开始健康监测。等待数据...")
+                self._log_to_ui("设备已确认开始健康监测。等待 RT 实时数据...")
                 duration = getattr(self, 'health_check_duration', 100)
                 self._start_countdown(duration)
             elif status_code == const.ACK_DEVICE_BUSY:
@@ -330,8 +329,8 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
     
     def on_health_data_received(self, data: bytes):
         """处理健康数据"""
-        if len(data) != 91:
-            self._log_to_ui(f"警告: 健康数据长度不正确 (应为 91, 收到 {len(data)})")
+        if len(data) != 95:
+            self._log_to_ui(f"警告: 健康数据长度不正确 (应为 95, 收到 {len(data)})")
             return
         
         try:
@@ -341,6 +340,7 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             rsv3 = data[85]
             state = data[86]
             ts = struct.unpack('<I', data[87:91])[0]
+            record_id = struct.unpack('<I', data[91:95])[0]
             
             hr, spo2, bk, fatigue, rsv1, rsv2, systolic, diastolic, cardiac, \
             resistance, rr_interval, sdnn, rmssd, nn50, pnn50 = struct.unpack('<15B', metrics)
@@ -352,31 +352,35 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
                 'cardiac': cardiac, 'resistance': resistance,
                 'rr_interval': rr_interval, 'sdnn': sdnn, 'rmssd': rmssd,
                 'nn50': nn50, 'pnn50': pnn50, 'state': state, 'timestamp': ts,
+                'record_id': record_id,
                 'ac_min': ac_min, 'ac_max': ac_max,
             }
             self._log_to_ui(
                 "健康数据: "
-                f"HR={hr} SpO2={spo2} BP={systolic}/{diastolic} "
+                f"ID={record_id} HR={hr} SpO2={spo2} BP={systolic}/{diastolic} "
                 f"疲劳={fatigue} HRV={sdnn} RR={rr_interval} "
                 f"state=0x{state:02X} AC={ac_min}..{ac_max}"
             )
             if getattr(self, "_health_check_collecting", False):
                 self._health_check_records.append(record_summary)
             
-            full_data = [
-                acdata, hr, spo2, bk, fatigue, rsv1, rsv2,
-                systolic, diastolic, cardiac, resistance,
-                rr_interval, sdnn, rmssd, nn50, pnn50,
-                rra, rsv3, state, ts
-            ]
+            self._update_data_labels({
+                'heartrate': hr,
+                'spo2': spo2,
+                'bk': bk,
+                'fatigue': fatigue,
+                'systolic': systolic,
+                'diastolic': diastolic,
+                'cardiac': cardiac,
+                'resistance': resistance,
+            })
             
-            self.db_handler.save_health_record(full_data)
-            self._load_history_from_db()
-            
-            if self.detection_timeout_timer.isActive():
-                self.detection_timeout_timer.stop()
-            
-            if not self.countdown_timer.isActive():
+            if getattr(self, "_health_check_collecting", False):
+                if self.detection_timeout_timer.isActive():
+                    self.detection_timeout_timer.stop()
+            elif not self.countdown_timer.isActive():
+                if self.detection_timeout_timer.isActive():
+                    self.detection_timeout_timer.stop()
                 self._stop_blinking()
                 self._reset_detection_state()
                 
@@ -544,6 +548,7 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
     
     def show_history_window(self):
         """显示历史数据窗口"""
+        self.stop_health_sync_timer()
         if self.history_window_instance is None or not self.history_window_instance.isVisible():
             if self.history_window_instance is not None:
                 try:
@@ -562,6 +567,7 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             self.serial_worker.sync_start.connect(self.history_window_instance.on_sync_start)
             self.serial_worker.sync_batch.connect(self.history_window_instance.on_sync_batch)
             self.serial_worker.sync_end.connect(self.history_window_instance.on_sync_end)
+            self.history_window_instance.finished.connect(lambda _=0: self.start_health_sync_timer())
         
         self.history_window_instance.show()
         self.history_window_instance.activateWindow()
@@ -582,11 +588,30 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
         self.settings_window_instance.show()
         self.settings_window_instance.activateWindow()
     
-    def send_sync_command(self, timestamp: int):
+    def send_sync_command(self, record_id: int):
         """发送同步命令"""
-        payload = struct.pack('<I', timestamp)
+        payload = struct.pack('<I', record_id)
         self._send_with_ack_check(const.CMD_SYNC_HEALTH_DATA, payload)
-        self._log_to_ui(f"已请求同步数据，Last Timestamp: {timestamp}")
+        self._log_to_ui(f"已请求同步数据，Last Record ID: {record_id}")
+
+    def _set_health_push_enabled(self, enabled: bool):
+        """通知设备开关实时健康数据推送。"""
+        try:
+            if self.serial_worker and self.serial_worker.serial_port and self.serial_worker.serial_port.is_open:
+                self._send_with_ack_check(const.CMD_SET_HEALTH_PUSH, struct.pack('<B', 1 if enabled else 0))
+                self._log_to_ui(f"实时健康数据推送已请求{'开启' if enabled else '关闭'}。")
+        except Exception as e:
+            self._log_to_ui(f"设置实时健康数据推送失败: {e}")
+
+    def _on_serial_connected(self):
+        """串口连接后启动同步定时器并按窗口状态开启推送。"""
+        self.start_health_sync_timer()
+        if self.isVisible() and not self.isMinimized():
+            self._set_health_push_enabled(True)
+
+    def _on_serial_disconnected(self):
+        """串口断开后清理同步定时器。"""
+        self.stop_health_sync_timer()
     
     # ========================
     #  UI 更新
@@ -603,7 +628,6 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
                     except (ValueError, TypeError):
                         display_value = str(value)
                 self.value_labels[key].setText(str(display_value))
-        self._log_to_ui("界面数据已更新。")
     
     def _update_mouse_labels(
         self,
@@ -676,6 +700,16 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
         self._log_to_ui("已最小化到托盘。通过托盘图标可再次打开，或选择退出。")
         event.ignore()
         self.hide_window()
+
+    def showEvent(self, event):
+        """窗口进入前台时开启实时健康数据推送。"""
+        super().showEvent(event)
+        self._set_health_push_enabled(True)
+
+    def hideEvent(self, event):
+        """窗口隐藏到托盘时关闭实时健康数据推送。"""
+        super().hideEvent(event)
+        self._set_health_push_enabled(False)
     
     def _shutdown_cleanup(self):
         """退出前资源清理"""

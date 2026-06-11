@@ -77,6 +77,8 @@ class HealthCheckMixin:
         """发送检测时长和开始检测命令"""
         duration = max(1, min(255, duration))
         self.health_check_duration = duration
+
+        self._set_health_push_enabled(True)
         
         # 发送检测时长
         payload = struct.pack('<B', duration)

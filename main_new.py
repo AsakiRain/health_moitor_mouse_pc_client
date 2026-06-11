@@ -1,5 +1,5 @@
 """
-CyMouse Monitor 应用入口
+健康监控鼠标 Monitor 应用入口
 
 初始化数据库、配置文件，并启动主窗口。
 """
@@ -14,7 +14,7 @@ from db.connection import init_database
 def main():
     # Windows: 设置 AppUserModelID 以确保任务栏图标正确显示
     if sys.platform == 'win32':
-        myappid = 'cynix.cymouse.monitor.1.0'
+        myappid = 'health.monitor.mouse.1.0'
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     
     app = QApplication(sys.argv)

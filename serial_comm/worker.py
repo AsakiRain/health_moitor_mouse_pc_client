@@ -373,8 +373,6 @@ class SerialWorker(QObject):
                 )
                 continue
             
-            if cmd != CMD_DEVICE_LOG:
-                self.log_message.emit(f"接收: CMD={hex(cmd)}, Payload={payload.hex(' ').upper()}")
             self._dispatch_command(cmd, payload)
 
     def _dispatch_command(self, cmd: int, payload: bytes):

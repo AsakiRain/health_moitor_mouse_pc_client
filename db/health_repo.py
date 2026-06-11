@@ -20,7 +20,7 @@ class HealthRepository:
         """保存健康数据记录"""
         columns = ['created_at'] + METRIC_KEYS
         placeholders = ', '.join(['?'] * len(columns))
-        insert_sql = f"INSERT INTO health_data ({', '.join(columns)}) VALUES ({placeholders})"
+        insert_sql = f"INSERT OR IGNORE INTO health_data ({', '.join(columns)}) VALUES ({placeholders})"
         
         try:
             conn = sqlite3.connect(self.db_path)
@@ -28,7 +28,6 @@ class HealthRepository:
             cursor.execute(insert_sql, [record.created_at] + record.to_list())
             conn.commit()
             conn.close()
-            print(f"健康数据已保存 (时间: {record.created_at})")
             return True
         except sqlite3.Error as e:
             print(f"保存健康数据失败: {e}")
@@ -36,7 +35,8 @@ class HealthRepository:
     
     def save_from_list(self, full_data: list) -> bool:
         """从列表保存健康数据（兼容旧接口）"""
-        ts = full_data[-1]
+        ts_index = METRIC_KEYS.index('timestamp') if 'timestamp' in METRIC_KEYS else -1
+        ts = full_data[ts_index] if ts_index >= 0 else 0
         try:
             created_at = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S') if ts else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         except (OSError, ValueError):
@@ -44,7 +44,7 @@ class HealthRepository:
         
         columns = ['created_at'] + METRIC_KEYS
         placeholders = ', '.join(['?'] * len(columns))
-        insert_sql = f"INSERT INTO health_data ({', '.join(columns)}) VALUES ({placeholders})"
+        insert_sql = f"INSERT OR IGNORE INTO health_data ({', '.join(columns)}) VALUES ({placeholders})"
         
         try:
             conn = sqlite3.connect(self.db_path)
@@ -52,7 +52,6 @@ class HealthRepository:
             cursor.execute(insert_sql, [created_at] + full_data)
             conn.commit()
             conn.close()
-            print(f"健康数据已保存 (时间: {created_at})")
             return True
         except sqlite3.Error as e:
             print(f"保存健康数据失败: {e}")
@@ -72,6 +71,22 @@ class HealthRepository:
             return row[0] if row and row[0] else 0
         except sqlite3.Error as e:
             print(f"获取最后时间戳失败: {e}")
+            return 0
+
+    def get_last_record_id(self) -> int:
+        """获取已保存的最大设备 record_id"""
+        if not os.path.exists(self.db_path):
+            return 0
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COALESCE(MAX(record_id), 0) FROM health_data")
+            row = cursor.fetchone()
+            conn.close()
+            return int(row[0]) if row and row[0] else 0
+        except sqlite3.Error as e:
+            print(f"获取最后 record_id 失败: {e}")
             return 0
     
     def get_recent(self, count: int = 50) -> List[Dict[str, Any]]:
@@ -179,7 +194,6 @@ class HealthRepository:
             '_valid_count': valid_count
         }
         
-        print(f"健康数据加载完成，有效记录 {valid_count} 条")
         return result
     
     def load_aggregated_for_analysis(self, interval_minutes: int = 10, max_records: int = 50) -> List[Dict]:

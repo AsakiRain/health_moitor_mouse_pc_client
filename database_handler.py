@@ -60,7 +60,9 @@ class DatabaseHandler:
             );
             """
             cursor.execute(create_mouse_sql)
+            self._migrate_health_data(cursor)
             self._migrate_mouse_data(cursor)
+            self._ensure_health_indexes(cursor)
             
             # 报告数据表
             create_reports_sql = """
@@ -245,7 +247,6 @@ class DatabaseHandler:
                 '_valid_count': valid_count  # 附加信息
             }
             
-            print(f"健康数据加载完成，有效记录 {valid_count} 条")
             return result
             
         except sqlite3.Error as e:
@@ -453,6 +454,22 @@ class DatabaseHandler:
             print(f"获取最后时间戳失败: {e}")
             return 0
 
+    def get_last_record_id(self) -> int:
+        """获取数据库中已保存的最大设备 record_id。"""
+        if not os.path.exists(self.db_file):
+            return 0
+
+        try:
+            conn = sqlite3.connect(self.db_file)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COALESCE(MAX(record_id), 0) FROM health_data")
+            row = cursor.fetchone()
+            conn.close()
+            return int(row[0]) if row and row[0] else 0
+        except sqlite3.Error as e:
+            print(f"获取最后 record_id 失败: {e}")
+            return 0
+
     def save_health_record(self, full_data: list) -> bool:
         """
         保存完整的 HealthDataRecord 到数据库。
@@ -462,10 +479,11 @@ class DatabaseHandler:
                 [acdata, hr, spo2, bk, fatigue, rsv1, rsv2,
                  systolic, diastolic, cardiac, resistance,
                  rr_interval, sdnn, rmssd, nn50, pnn50,
-                 rra, rsv3, state, timestamp]
+                 rra, rsv3, state, timestamp, record_id]
         """
         # 使用设备时间戳作为 created_at；设备无 RTC 时 timestamp 为 0，回退到 PC 当前时间
-        ts = full_data[-1]  # timestamp 是最后一个元素
+        ts_index = self.metric_keys.index('timestamp') if 'timestamp' in self.metric_keys else -1
+        ts = full_data[ts_index] if ts_index >= 0 else 0
         try:
             created_at = datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S') if ts else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         except (OSError, ValueError):
@@ -473,21 +491,53 @@ class DatabaseHandler:
         
         columns = ['created_at'] + self.metric_keys
         placeholders = ', '.join(['?'] * len(columns))
-        insert_sql = f"INSERT INTO health_data ({', '.join(columns)}) VALUES ({placeholders})"
+        insert_sql = f"INSERT OR IGNORE INTO health_data ({', '.join(columns)}) VALUES ({placeholders})"
         
         try:
             conn = sqlite3.connect(self.db_file)
             cursor = conn.cursor()
+            if 'record_id' in self.metric_keys:
+                record_id_index = self.metric_keys.index('record_id')
+                record_id = full_data[record_id_index]
+                if record_id:
+                    cursor.execute("SELECT 1 FROM health_data WHERE record_id = ? LIMIT 1", (record_id,))
+                    if cursor.fetchone():
+                        conn.close()
+                        return False
             cursor.execute(insert_sql, [created_at] + full_data)
             conn.commit()
             conn.close()
-            print(f"健康数据已保存到数据库 (时间: {created_at})。")
             return True
         except sqlite3.Error as e:
             print(f"保存健康数据到数据库失败: {e}")
             return False
 
     # --- 鼠标数据相关 ---
+    def _migrate_health_data(self, cursor: sqlite3.Cursor) -> None:
+        """为历史 health_data 表补充新增字段。"""
+        cursor.execute("PRAGMA table_info(health_data)")
+        existing = {row[1] for row in cursor.fetchall()}
+        if "record_id" not in existing:
+            cursor.execute("ALTER TABLE health_data ADD COLUMN record_id INTEGER NOT NULL DEFAULT 0")
+
+    def _ensure_health_indexes(self, cursor: sqlite3.Cursor) -> None:
+        """创建设备记录 ID 的唯一索引，避免实时上报和历史同步重复入库。"""
+        cursor.execute("""
+            DELETE FROM health_data
+            WHERE record_id > 0
+              AND id NOT IN (
+                  SELECT MIN(id)
+                  FROM health_data
+                  WHERE record_id > 0
+                  GROUP BY record_id
+              )
+        """)
+        cursor.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_health_data_record_id
+            ON health_data(record_id)
+            WHERE record_id > 0
+        """)
+
     def _migrate_mouse_data(self, cursor: sqlite3.Cursor) -> None:
         """为历史 mouse_data 表补充新增的侧键统计列。"""
         cursor.execute("PRAGMA table_info(mouse_data)")

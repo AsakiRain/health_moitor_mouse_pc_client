@@ -44,14 +44,14 @@ class SerialCommands:
         return build_frame(CMD_GET_MOUSE_DATA, b'')
     
     @staticmethod
-    def build_sync_request(last_timestamp: int = 0) -> bytes:
+    def build_sync_request(last_record_id: int = 0) -> bytes:
         """
         构建数据同步请求帧
         
         Args:
-            last_timestamp: 最后一条记录的时间戳，设备返回该时间戳之后的数据
+            last_record_id: 已保存的最大设备记录 ID，设备返回该 ID 之后的数据
         """
-        return build_frame(CMD_SYNC_HEALTH_DATA, struct.pack('<I', last_timestamp))
+        return build_frame(CMD_SYNC_HEALTH_DATA, struct.pack('<I', last_record_id))
     
     @staticmethod
     def build_time_sync(force: bool = False) -> bytes:

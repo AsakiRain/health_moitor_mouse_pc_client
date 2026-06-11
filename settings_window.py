@@ -3,15 +3,15 @@ import struct
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QMessageBox, QPushButton, QSpinBox, QTableWidget,
-    QTableWidgetItem, QVBoxLayout
+    QHBoxLayout, QLabel, QMessageBox, QPushButton, QSlider, QSpinBox, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget
 )
 from PySide6.QtGui import QColor
 
 import constants as const
 
 
-SETTINGS_PAYLOAD_LEN = 37
+SETTINGS_PAYLOAD_LEN = 38
 MAX_DPI_LEVELS = 10
 
 
@@ -30,6 +30,7 @@ def parse_settings_payload(payload: bytes) -> dict:
     led_mode = payload[29]
     led_period_seconds, auto_sleep_minutes = struct.unpack('<HH', payload[30:34])
     led_color = tuple(payload[34:37])
+    led_brightness = payload[37]
     return {
         'dpi_values': dpi_values,
         'current_idx': current_idx,
@@ -41,6 +42,7 @@ def parse_settings_payload(payload: bytes) -> dict:
         'led_mode': led_mode,
         'led_period_seconds': led_period_seconds,
         'led_color': led_color,
+        'led_brightness': led_brightness,
         'auto_sleep_minutes': auto_sleep_minutes,
     }
 
@@ -55,7 +57,7 @@ def build_settings_payload(settings: dict) -> bytes:
         raise ValueError("当前 DPI 档位超出范围")
     padded = dpi_values + [0] * (MAX_DPI_LEVELS - dpi_count)
     return struct.pack(
-        '<BB10HBHHBBBHHBBB',
+        '<BB10HBHHBBBHHBBBB',
         dpi_count,
         current_idx,
         *padded,
@@ -68,6 +70,7 @@ def build_settings_payload(settings: dict) -> bytes:
         settings['led_period_seconds'],
         settings['auto_sleep_minutes'],
         *settings['led_color'],
+        settings['led_brightness'],
     )
 
 
@@ -150,11 +153,23 @@ class MouseSettingsWindow(QDialog):
         self.led_mode.addItems(["常亮蓝", "彩虹循环", "呼吸渐变", "追逐灯", "自定义颜色"])
         self.led_mode.setCurrentIndex(1)
         self.led_period_seconds = self._spin(1, 3600, 8)
+        self.led_brightness = self._spin(1, 255, 180)
+        self.led_brightness_slider = QSlider(Qt.Horizontal)
+        self.led_brightness_slider.setRange(1, 255)
+        self.led_brightness_slider.setValue(self.led_brightness.value())
+        self.led_brightness_slider.valueChanged.connect(self.led_brightness.setValue)
+        self.led_brightness.valueChanged.connect(self.led_brightness_slider.setValue)
+        brightness_row = QWidget()
+        brightness_layout = QHBoxLayout(brightness_row)
+        brightness_layout.setContentsMargins(0, 0, 0, 0)
+        brightness_layout.addWidget(self.led_brightness_slider)
+        brightness_layout.addWidget(self.led_brightness)
         self.color_button = QPushButton()
         self.color_button.clicked.connect(self.pick_color)
         form.addRow("开关", self.led_enabled)
         form.addRow("光效模式", self.led_mode)
         form.addRow("循环周期(秒)", self.led_period_seconds)
+        form.addRow("亮度比例", brightness_row)
         form.addRow("自定义颜色", self.color_button)
         self._update_color_button()
         return group
@@ -212,6 +227,7 @@ class MouseSettingsWindow(QDialog):
         self.led_enabled.setChecked(settings['led_enabled'])
         self.led_mode.setCurrentIndex(settings['led_mode'])
         self.led_period_seconds.setValue(settings['led_period_seconds'])
+        self.led_brightness.setValue(settings['led_brightness'])
         r, g, b = settings['led_color']
         self.custom_color = QColor(r, g, b)
         self._update_color_button()
@@ -251,6 +267,7 @@ class MouseSettingsWindow(QDialog):
             'led_enabled': self.led_enabled.isChecked(),
             'led_mode': self.led_mode.currentIndex(),
             'led_period_seconds': self.led_period_seconds.value(),
+            'led_brightness': self.led_brightness.value(),
             'led_color': (self.custom_color.red(), self.custom_color.green(), self.custom_color.blue()),
             'auto_sleep_minutes': self.auto_sleep_minutes.value(),
         }

@@ -112,7 +112,7 @@ class TrayMixin:
             self,
             "关于",
             "<p style='font-size: 1px;'>&nbsp;</p>"
-            "<p style='font-size: 14px; font-weight: bold;'> CyMouse 数据查看工具 v1.0 &nbsp;</p>"
+            "<p style='font-size: 14px; font-weight: bold;'> 健康监控鼠标 数据查看工具 v1.0 &nbsp;</p>"
             "<p align='center'>Powered by <a href='https://cynix.cc' style='color: #89b4fa;'>Cynix.cc</a>&nbsp;&nbsp;&nbsp;</p>"
         )
     

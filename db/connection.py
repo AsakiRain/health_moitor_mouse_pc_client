@@ -51,7 +51,8 @@ def init_database(db_file: str = DEFAULT_DB_FILE):
                 rra BLOB,
                 rsv3 INTEGER,
                 state INTEGER,
-                timestamp INTEGER
+                timestamp INTEGER,
+                record_id INTEGER NOT NULL DEFAULT 0
             )
         """)
         
@@ -81,6 +82,7 @@ def init_database(db_file: str = DEFAULT_DB_FILE):
         
         # 迁移：补充 health_data 表中可能缺失的列
         _migrate_health_data(cursor)
+        _ensure_health_indexes(cursor)
         _migrate_mouse_data(cursor)
 
         conn.commit()
@@ -108,6 +110,7 @@ def _migrate_health_data(cursor: sqlite3.Cursor):
         ('rsv3',        'INTEGER', '0'),
         ('state',       'INTEGER', '0'),
         ('timestamp',   'INTEGER', '0'),
+        ('record_id',   'INTEGER', '0'),
     ]
 
     for col_name, col_type, default in required_columns:
@@ -129,3 +132,22 @@ def _migrate_mouse_data(cursor: sqlite3.Cursor):
                 f"ALTER TABLE mouse_data ADD COLUMN {col_name} INTEGER NOT NULL DEFAULT 0"
             )
             print(f"数据库迁移: mouse_data 表新增列 '{col_name}'")
+
+
+def _ensure_health_indexes(cursor: sqlite3.Cursor):
+    """为设备 record_id 建唯一索引，避免同步重复写入。"""
+    cursor.execute("""
+        DELETE FROM health_data
+        WHERE record_id > 0
+          AND id NOT IN (
+              SELECT MIN(id)
+              FROM health_data
+              WHERE record_id > 0
+              GROUP BY record_id
+          )
+    """)
+    cursor.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_health_data_record_id
+        ON health_data(record_id)
+        WHERE record_id > 0
+    """)
