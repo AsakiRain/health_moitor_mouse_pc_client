@@ -33,3 +33,9 @@ class DeviceLogWindow(QDialog):
     def append_log(self, message: str):
         timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
         self.log_output.append(f"[{timestamp}] {message}")
+
+    def closeEvent(self, event):
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_set_device_log_enabled"):
+            parent._set_device_log_enabled(False)
+        super().closeEvent(event)

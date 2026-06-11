@@ -578,6 +578,7 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             self.device_log_window_instance = DeviceLogWindow(self)
         self.device_log_window_instance.show()
         self.device_log_window_instance.activateWindow()
+        self._set_device_log_enabled(True)
 
     def show_settings_window(self):
         """显示鼠标设置窗口"""
@@ -602,6 +603,15 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
                 self._log_to_ui(f"实时健康数据推送已请求{'开启' if enabled else '关闭'}。")
         except Exception as e:
             self._log_to_ui(f"设置实时健康数据推送失败: {e}")
+
+    def _set_device_log_enabled(self, enabled: bool):
+        """通知设备开关日志推送。"""
+        try:
+            if self.serial_worker and self.serial_worker.serial_port and self.serial_worker.serial_port.is_open:
+                self._send_with_ack_check(const.CMD_SET_DEVICE_LOG_PUSH, struct.pack('<B', 1 if enabled else 0))
+                self._log_to_ui(f"设备日志上报已请求{'开启' if enabled else '关闭'}。")
+        except Exception as e:
+            self._log_to_ui(f"设置设备日志上报失败: {e}")
 
     def _on_serial_connected(self):
         """串口连接后启动同步定时器并按窗口状态开启推送。"""
