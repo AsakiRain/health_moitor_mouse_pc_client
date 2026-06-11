@@ -114,7 +114,7 @@ class SerialWorker(QObject):
     #  连接管理
     # ========================
 
-    def connect_serial(self, port_name: str, baudrate: int = 115200) -> bool:
+    def connect_serial(self, port_name: str, baudrate: int = 921600) -> bool:
         """
         连接到串口并验证设备
         
