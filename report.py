@@ -101,6 +101,16 @@ class ReportGeneratorThread(QThread):
                 self.progress_signal.emit(message, min(current_progress, 90))
                 break
 
+    @staticmethod
+    def _format_dependency_error(error):
+        missing_name = getattr(error, "name", "") or str(error)
+        install_hint = {
+            "openai": "请在上位机虚拟环境中安装依赖：pip install openai",
+            "pandas": "请在上位机虚拟环境中安装依赖：pip install pandas",
+            "matplotlib": "请在上位机虚拟环境中安装依赖：pip install matplotlib",
+        }.get(missing_name, f"请检查上位机虚拟环境依赖是否安装完整：{missing_name}")
+        return f"生成报告失败：缺少 Python 依赖模块 '{missing_name}'。\n{install_hint}"
+
     def run(self):
         # 让调试器附加到此线程（调试时启用，发布时可注释掉）
         # try:
@@ -108,14 +118,14 @@ class ReportGeneratorThread(QThread):
         #     debugpy.debug_this_thread()
         # except:
         #     pass
-        
-        # 延迟导入，避免阻塞主窗口加载
-        import pandas as pd
-        import data_plot
-        import data_ai_analysis
-        from database_handler import DatabaseHandler
 
         try:
+            # 延迟导入，避免阻塞主窗口加载；导入失败也必须回传 UI，不能让 QThread 静默崩掉。
+            import pandas as pd
+            import data_plot
+            import data_ai_analysis
+            from database_handler import DatabaseHandler
+
             self.progress_signal.emit("正在读取健康数据...", 10)
             
             # 1. 使用 DatabaseHandler 的汇聚方法读取数据
@@ -171,6 +181,8 @@ class ReportGeneratorThread(QThread):
 
             self.finished_signal.emit(True, "报告生成成功", {"id": report_id})
 
+        except ModuleNotFoundError as e:
+            self.finished_signal.emit(False, self._format_dependency_error(e), {})
         except Exception as e:
             import traceback
             traceback.print_exc()
@@ -778,18 +790,29 @@ class ReportWindow(QWidget):
             QMessageBox.critical(self, "错误", f"数据库检查失败: {e}")
 
     def start_report_generation(self):
+        self._report_generation_done = False
         self.progress = GenerationProgressDialog(self)
         self.progress.show()
 
         self.thread = ReportGeneratorThread(self.db_path)
         self.thread.finished_signal.connect(self.on_report_generated)
         self.thread.progress_signal.connect(self.progress.update_status)
+        self.thread.finished.connect(self.on_report_thread_finished)
         self.thread.start()
 
     def on_report_generated(self, success, message, data):
+        self._report_generation_done = True
         self.progress.close()
         if success:
             self.load_reports() # 刷新列表
         else:
             QMessageBox.warning(self, "失败", message)
+
+    def on_report_thread_finished(self):
+        if getattr(self, "_report_generation_done", False):
+            return
+        self._report_generation_done = True
+        if hasattr(self, "progress") and self.progress:
+            self.progress.close()
+        QMessageBox.warning(self, "失败", "报告生成线程异常结束，请查看控制台日志或检查运行环境依赖。")
 

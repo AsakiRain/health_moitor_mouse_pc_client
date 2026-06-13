@@ -80,7 +80,7 @@ class MouseSettingsWindow(QDialog):
         self.serial_worker = serial_worker
         self.custom_color = QColor(0, 80, 180)
         self.setWindowTitle("鼠标设置")
-        self.resize(560, 620)
+        self.resize(560, 720)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_dpi_group())
