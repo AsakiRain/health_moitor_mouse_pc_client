@@ -1,6 +1,7 @@
 import math
 import csv
 import struct
+import uuid
 from datetime import datetime
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QTableView, QHeaderView, 
@@ -41,7 +42,8 @@ class HistoryWindow(QDialog):
         self.total_pages = 0
 
         # --- 数据库连接 ---
-        self.db = QSqlDatabase.addDatabase("QSQLITE", "history_connection")
+        self._db_connection_name = f"history_connection_{uuid.uuid4().hex}"
+        self.db = QSqlDatabase.addDatabase("QSQLITE", self._db_connection_name)
         self.db.setDatabaseName(db_path)
         if not self.db.open():
             print(f"错误: 无法打开数据库 {db_path}")
@@ -166,6 +168,23 @@ class HistoryWindow(QDialog):
 
         self.setLayout(main_layout)
         self._update_sync_summary()
+
+    def closeEvent(self, event):
+        self._close_database()
+        super().closeEvent(event)
+
+    def reject(self):
+        self._close_database()
+        super().reject()
+
+    def _close_database(self):
+        if hasattr(self, "db") and self.db.isValid():
+            if self.db.isOpen():
+                self.db.close()
+            connection_name = getattr(self, "_db_connection_name", "")
+            self.db = QSqlDatabase()
+            if connection_name:
+                QSqlDatabase.removeDatabase(connection_name)
 
     def _update_sync_summary(self):
         """更新历史数据同步摘要。"""

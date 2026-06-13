@@ -550,14 +550,7 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
         """显示历史数据窗口"""
         self.stop_health_sync_timer()
         if self.history_window_instance is None or not self.history_window_instance.isVisible():
-            if self.history_window_instance is not None:
-                try:
-                    self.history_window_instance.request_sync.disconnect(self.send_sync_command)
-                    self.serial_worker.sync_start.disconnect(self.history_window_instance.on_sync_start)
-                    self.serial_worker.sync_batch.disconnect(self.history_window_instance.on_sync_batch)
-                    self.serial_worker.sync_end.disconnect(self.history_window_instance.on_sync_end)
-                except (TypeError, RuntimeError):
-                    pass
+            self._detach_history_window()
             
             self.history_window_instance = HistoryWindow(
                 db_path=self.db_handler.db_file,
@@ -567,10 +560,34 @@ class MainWindow(TrayMixin, StatusBarMixin, HealthCheckMixin, SyncMixin, QMainWi
             self.serial_worker.sync_start.connect(self.history_window_instance.on_sync_start)
             self.serial_worker.sync_batch.connect(self.history_window_instance.on_sync_batch)
             self.serial_worker.sync_end.connect(self.history_window_instance.on_sync_end)
-            self.history_window_instance.finished.connect(lambda _=0: self.start_health_sync_timer())
+            self.history_window_instance.finished.connect(self._on_history_window_finished)
         
         self.history_window_instance.show()
         self.history_window_instance.activateWindow()
+
+    def _detach_history_window(self):
+        """断开历史窗口的同步信号，避免后台同步打到已关闭的 QSqlDatabase。"""
+        window = self.history_window_instance
+        if window is None:
+            return
+        try:
+            window.request_sync.disconnect(self.send_sync_command)
+        except (TypeError, RuntimeError):
+            pass
+        for signal, slot in (
+            (self.serial_worker.sync_start, window.on_sync_start),
+            (self.serial_worker.sync_batch, window.on_sync_batch),
+            (self.serial_worker.sync_end, window.on_sync_end),
+        ):
+            try:
+                signal.disconnect(slot)
+            except (TypeError, RuntimeError):
+                pass
+
+    def _on_history_window_finished(self, *_):
+        """历史窗口关闭后恢复后台同步，并移除窗口专用同步接收者。"""
+        self._detach_history_window()
+        self.start_health_sync_timer()
 
     def show_device_log_window(self):
         """显示设备日志窗口"""
